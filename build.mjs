@@ -83,13 +83,24 @@ fs.writeFileSync(
   'utf8'
 );
 
-// 2. Copy local PDF.js build (for offline client-side PDF page 1 rendering)
+// 2. Copy local PDF.js legacy build + WASM decoders (for iOS < 17.4 & BTI CCITT/JBIG2/JPX scans)
 const vendorDir = path.join(__dirname, 'vendor');
+fs.rmSync(vendorDir, { recursive: true, force: true });
 ensureDir(vendorDir);
-const pdfBuildDir = path.join(__dirname, 'node_modules', 'pdfjs-dist', 'build');
+
+const pdfLegacyBuildDir = path.join(__dirname, 'node_modules', 'pdfjs-dist', 'legacy', 'build');
 for (const file of ['pdf.min.mjs', 'pdf.worker.min.mjs']) {
-  fs.copyFileSync(path.join(pdfBuildDir, file), path.join(vendorDir, file));
+  fs.copyFileSync(path.join(pdfLegacyBuildDir, file), path.join(vendorDir, file));
 }
+
+copyDir(
+  path.join(__dirname, 'node_modules', 'pdfjs-dist', 'wasm'),
+  path.join(vendorDir, 'wasm')
+);
+copyDir(
+  path.join(__dirname, 'node_modules', 'pdfjs-dist', 'iccs'),
+  path.join(vendorDir, 'iccs')
+);
 
 // 3. Assemble static dist/ directory (for Render Static Site publish directory)
 const distDir = path.join(__dirname, 'dist');

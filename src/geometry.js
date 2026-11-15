@@ -34,15 +34,48 @@ export function vectorToAzimuthDeg(dx, dy) {
   return normalizeDeg((rad * 180) / Math.PI);
 }
 
+/** Кратчайшая знаковая разница углов (в градусах) от fromDeg к toDeg в диапазоне (-180, 180]. */
+export function signedAngleDeltaDeg(fromDeg, toDeg) {
+  const diff = (((Number(toDeg) - Number(fromDeg)) % 360) + 540) % 360 - 180;
+  return diff === -180 ? 180 : diff;
+}
+
 /**
- * Переводит показание компаса телефона в угол Севера на плане.
- * Если луч измерения на плане смотрит под углом measurementDirOnPlanDeg (например, 0° — строго вверх
- * перпендикулярно верхней стене плана), а компас телефона в эту сторону показывает compassDeg
- * (азимут от географического Севера по часовой стрелке), то Север на плане равен:
- *   northAngleDeg = (measurementDirOnPlanDeg - compassDeg + 360) % 360.
+ * Вычисляет направление географического Севера на плане (в градусах по часовой стрелке от верха листа)
+ * по двум отмеченным углам одной и той же наружной стены:
+ * - satPoint1 -> satPoint2: отрезок стены на спутниковом снимке (где Север строго сверху, 0°);
+ * - planPoint1 -> planPoint2: те же два угла в том же порядке на плане квартиры.
  */
-export function northAngleFromCompass(compassDeg, measurementDirOnPlanDeg = 0) {
-  return normalizeDeg(measurementDirOnPlanDeg - compassDeg);
+export function northAngleFromWallSegments(satPoint1, satPoint2, planPoint1, planPoint2) {
+  if (
+    !satPoint1 ||
+    !satPoint2 ||
+    !planPoint1 ||
+    !planPoint2 ||
+    !Number.isFinite(satPoint1.x) ||
+    !Number.isFinite(satPoint1.y) ||
+    !Number.isFinite(satPoint2.x) ||
+    !Number.isFinite(satPoint2.y) ||
+    !Number.isFinite(planPoint1.x) ||
+    !Number.isFinite(planPoint1.y) ||
+    !Number.isFinite(planPoint2.x) ||
+    !Number.isFinite(planPoint2.y)
+  ) {
+    return null;
+  }
+
+  const satDx = satPoint2.x - satPoint1.x;
+  const satDy = satPoint2.y - satPoint1.y;
+  const planDx = planPoint2.x - planPoint1.x;
+  const planDy = planPoint2.y - planPoint1.y;
+
+  if (Math.hypot(satDx, satDy) < 1e-6 || Math.hypot(planDx, planDy) < 1e-6) {
+    return null;
+  }
+
+  const satWallAzimuth = vectorToAzimuthDeg(satDx, satDy);
+  const planWallAzimuth = vectorToAzimuthDeg(planDx, planDy);
+  return normalizeDeg(planWallAzimuth - satWallAzimuth);
 }
 
 /** Расстояние между двумя точками. */
@@ -492,22 +525,30 @@ function maxDistanceFromCenter(center, vertices) {
   return maxD;
 }
 
+export const CENTER_OUTSIDE_NOTE = 'Центр вне стен — покажите эту карту Анне';
+
 /**
  * Брахмастан по форме квартиры (Р8 и Р9, _resheniya-anny.md:23-24; С. А. Балута, т. 2, с. 42–43):
  * 1) Центр соединяется со всеми внутренними углами, от центра откладывается 1/3 каждого отрезка
  *    (площадь невырезанного Брахмастана равна 1/9 площади квартиры).
  * 2) За пределами стен квартиры Брахмастан находиться не может: любая часть вне контура отсекается.
+ * 3) Если центр вне стен или Брахмастан пуст / почти весь отсечён (осталось < 25% его расчётной площади),
+ *    выставляется флаг isMostlyClipped.
  */
 export function computeBrahmastan(vertices, centerInput = null) {
   const pts = cleanPolygonVertices(vertices);
   const center = centerInput || computePolygonCenter(pts);
   if (!center || pts.length < 3) return null;
 
+  const centerInside = isPointInPolygon(center, pts);
   const apartmentArea = polygonArea(pts);
   const rawVertices = scalePolygonFromCenter(pts, center, 1 / 3);
   const rawArea = polygonArea(rawVertices);
   const { pieces, area } = intersectPolygons(rawVertices, pts);
   const wasClipped = rawArea - area > Math.max(1e-5, rawArea * 1e-5);
+  const retainedRatio = rawArea > 0 ? area / rawArea : 0;
+  const isEmpty = area <= 1e-5 || pieces.length === 0;
+  const isMostlyClipped = isEmpty || retainedRatio < 0.25;
 
   const raysToCorners = pts.map((corner, idx) => ({
     index: idx,
@@ -518,12 +559,16 @@ export function computeBrahmastan(vertices, centerInput = null) {
   return {
     meta: BRAHMASTAN_META,
     center,
+    centerInside,
     rawVertices,
     pieces,
     rawArea,
     area,
+    retainedRatio,
     shareOfApartment: apartmentArea > 0 ? area / apartmentArea : 0,
     wasClipped,
+    isEmpty,
+    isMostlyClipped,
     raysToCorners,
   };
 }
@@ -712,8 +757,8 @@ export function computePadaGrid(vertices, centerInput = null, northAngleDeg = 0)
   };
 }
 
-/** Полный расчёт Васту-карты по контуру и направлению Севера. */
-export function buildVastuMap(vertices, northAngleDeg = 0) {
+/** Полный расчёт Васту-карты по контуру и направлению Севера (northAngleDeg может быть null, если Север ещё не задан). */
+export function buildVastuMap(vertices, northAngleDeg = null) {
   const pts = cleanPolygonVertices(vertices);
   if (pts.length < 3) return null;
 
@@ -724,23 +769,32 @@ export function buildVastuMap(vertices, northAngleDeg = 0) {
   const area = polygonArea(pts);
   const centerInside = isPointInPolygon(center, pts);
   const brahmastan = computeBrahmastan(pts, center);
-  const sectors = computeSectors(pts, center, northAngleDeg);
-  const padaGrid = computePadaGrid(pts, center, northAngleDeg);
+  const centerOutsideOrClipped =
+    !centerInside || !brahmastan || brahmastan.isMostlyClipped;
+  const centerNote = centerOutsideOrClipped ? CENTER_OUTSIDE_NOTE : null;
 
-  // Определяем наиболее выраженный и самый малый сектора (для сводки ученице)
-  const sortedByShare = [...sectors].sort((a, b) => b.share - a.share);
+  const hasNorth =
+    northAngleDeg !== null &&
+    northAngleDeg !== undefined &&
+    northAngleDeg !== '' &&
+    Number.isFinite(Number(northAngleDeg));
+
+  const normalizedNorth = hasNorth ? normalizeDeg(Number(northAngleDeg)) : null;
+  const sectors = hasNorth ? computeSectors(pts, center, normalizedNorth) : [];
+  const padaGrid = hasNorth ? computePadaGrid(pts, center, normalizedNorth) : null;
 
   return {
     vertices: pts,
     area,
     center,
     centerInside,
+    centerOutsideOrClipped,
+    centerNote,
     selfIntersects,
-    northAngleDeg: normalizeDeg(northAngleDeg),
+    northSet: hasNorth,
+    northAngleDeg: normalizedNorth,
     brahmastan,
     sectors,
-    largestSector: sortedByShare[0] || null,
-    smallestSector: sortedByShare[sortedByShare.length - 1] || null,
     padaGrid,
   };
 }

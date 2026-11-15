@@ -1,23 +1,75 @@
 /**
- * Чтение планов квартир из локальных файлов устройства (JPG, PNG, WebP и PDF — 1-я страница).
- * Всё выполняется в браузере без отправки на сервер и без обращения к внешним CDN.
+ * Чтение планов квартир и спутниковых снимков из локальных файлов устройства
+ * (JPG, PNG, WebP и первая страница PDF).
+ * Обработка выполняется в браузере без отправки файлов в сеть.
  */
+
+const PDF_FALLBACK_MESSAGE =
+  'Не получилось открыть этот PDF на телефоне — загрузите план как фото или скриншот';
+const IMAGE_FALLBACK_MESSAGE =
+  'Не получилось прочитать изображение. Выберите файл JPG, PNG или скриншот экрана.';
+
+const MAX_IOS_CANVAS_PIXELS = 15_500_000; // строго ниже лимита iOS (16 Мп)
+const PDF_TARGET_SIDE_PX = 2000;
+const IMAGE_MAX_SIDE_PX = 3000;
+const SAT_MAX_SIDE_PX = 2000;
+const PDF_TIMEOUT_MS = 15000;
 
 let pdfjsPromise = null;
 
 async function loadPdfJs() {
   if (!pdfjsPromise) {
-    pdfjsPromise = import('../vendor/pdf.min.mjs').then((mod) => {
-      const workerUrl = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
-      mod.GlobalWorkerOptions.workerSrc = workerUrl;
-      return mod;
-    });
+    pdfjsPromise = import('../vendor/pdf.min.mjs')
+      .then((mod) => {
+        const workerUrl = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
+        mod.GlobalWorkerOptions.workerSrc = workerUrl;
+        return mod;
+      })
+      .catch((err) => {
+        pdfjsPromise = null;
+        throw err;
+      });
   }
   return pdfjsPromise;
 }
 
+function fitDimensionsWithinLimits(rawWidth, rawHeight, maxSidePx) {
+  const sw = Math.max(1, Number(rawWidth) || 1);
+  const sh = Math.max(1, Number(rawHeight) || 1);
+  let scale = Math.min(1, maxSidePx / Math.max(sw, sh));
+  const areaAfterSide = sw * scale * (sh * scale);
+  if (areaAfterSide > MAX_IOS_CANVAS_PIXELS) {
+    scale *= Math.sqrt(MAX_IOS_CANVAS_PIXELS / areaAfterSide);
+  }
+  return {
+    width: Math.max(1, Math.floor(sw * scale)),
+    height: Math.max(1, Math.floor(sh * scale)),
+  };
+}
+
 /**
- * Поворачивает исходный Canvas/Image кратно 90° и возвращает новый Canvas.
+ * Проверяет, не отрисовался ли лист полностью белым / пустым.
+ */
+export function isCanvasBlankWhite(ctx, width, height) {
+  if (width <= 0 || height <= 0) return true;
+  const imgData = ctx.getImageData(0, 0, width, height).data;
+  // Плотный шаг выборки (каждый 2-й пиксель) ловит даже тонкие линии 1px скана БТИ
+  const stride = 8; // 2 пикселя * 4 канала RGBA
+  for (let i = 0; i < imgData.length; i += stride) {
+    const a = imgData[i + 3];
+    if (a === 0) continue;
+    const r = imgData[i];
+    const g = imgData[i + 1];
+    const b = imgData[i + 2];
+    if (r < 250 || g < 250 || b < 250) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Поворачивает исходный Canvas/Image кратно 90° по часовой стрелке и возвращает новый Canvas.
  */
 export function rotatePlanCanvas(source, quarterTurns = 1) {
   const turns = ((quarterTurns % 4) + 4) % 4;
@@ -50,74 +102,118 @@ export function rotatePlanCanvas(source, quarterTurns = 1) {
   return out;
 }
 
-async function renderImageFileToCanvas(file) {
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Не удалось прочитать файл изображения.'));
-    reader.readAsDataURL(file);
-  });
+async function renderImageFileToCanvas(file, maxSidePx = IMAGE_MAX_SIDE_PX) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error(IMAGE_FALLBACK_MESSAGE));
+      el.src = objectUrl;
+    });
 
-  const img = await new Promise((resolve, reject) => {
-    const el = new Image();
-    el.onload = () => resolve(el);
-    el.onerror = () =>
-      reject(new Error('Формат изображения не поддерживается браузером. Попробуйте PNG или JPG.'));
-    el.src = dataUrl;
-  });
+    if (!img.naturalWidth || !img.naturalHeight) {
+      throw new Error(IMAGE_FALLBACK_MESSAGE);
+    }
 
-  // Ограничиваем максимальную сторону до 3200 px для плавной работы на телефоне
-  const maxSide = 3200;
-  const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
-  const width = Math.max(1, Math.round(img.naturalWidth * scale));
-  const height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const { width, height } = fitDimensionsWithinLimits(
+      img.naturalWidth,
+      img.naturalHeight,
+      maxSidePx
+    );
 
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, width, height);
-  ctx.drawImage(img, 0, 0, width, height);
-  return canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas;
+  } catch {
+    throw new Error(IMAGE_FALLBACK_MESSAGE);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function renderPdfFirstPageToCanvas(file) {
-  const pdfjs = await loadPdfJs();
-  const buffer = await file.arrayBuffer();
-  const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(buffer),
-    isEvalSupported: false,
-    useSystemFonts: true,
+  let loadingTask = null;
+  let timeoutId = null;
+
+  const workPromise = (async () => {
+    const pdfjs = await loadPdfJs();
+    const buffer = await file.arrayBuffer();
+    const wasmUrl = new URL('../vendor/wasm/', import.meta.url).href;
+    const iccUrl = new URL('../vendor/iccs/', import.meta.url).href;
+
+    loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      wasmUrl,
+      iccUrl,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    });
+
+    const pdf = await loadingTask.promise;
+    const page = await pdf.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const maxBaseSide = Math.max(1, baseViewport.width, baseViewport.height);
+
+    let scale = Math.min(4, PDF_TARGET_SIDE_PX / maxBaseSide);
+    const estPixels = baseViewport.width * scale * (baseViewport.height * scale);
+    if (estPixels > MAX_IOS_CANVAS_PIXELS) {
+      scale *= Math.sqrt(MAX_IOS_CANVAS_PIXELS / estPixels);
+    }
+
+    const viewport = page.getViewport({ scale });
+    const width = Math.max(1, Math.floor(viewport.width));
+    const height = Math.max(1, Math.floor(viewport.height));
+
+    if (width * height > 16_000_000) {
+      throw new Error(PDF_FALLBACK_MESSAGE);
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, width, height);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    if (isCanvasBlankWhite(ctx, width, height)) {
+      throw new Error(PDF_FALLBACK_MESSAGE);
+    }
+
+    return canvas;
+  })();
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(PDF_FALLBACK_MESSAGE));
+    }, PDF_TIMEOUT_MS);
   });
 
-  const pdf = await loadingTask.promise;
-  const page = await pdf.getPage(1);
-  const baseViewport = page.getViewport({ scale: 1 });
-  const targetMaxSide = 2400;
-  const scale = Math.min(
-    3,
-    Math.max(1.2, targetMaxSide / Math.max(baseViewport.width, baseViewport.height))
-  );
-  const viewport = page.getViewport({ scale });
-
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(viewport.width);
-  canvas.height = Math.round(viewport.height);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  return canvas;
+  try {
+    return await Promise.race([workPromise, timeoutPromise]);
+  } catch {
+    throw new Error(PDF_FALLBACK_MESSAGE);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (loadingTask && typeof loadingTask.destroy === 'function') {
+      loadingTask.destroy().catch(() => {});
+    }
+  }
 }
 
 /**
- * Принимает File (JPG, PNG, WebP или PDF) и возвращает { canvas, width, height, title }.
+ * Открывает файл плана квартиры (JPG, PNG, WebP или PDF) и возвращает { canvas, width, height, title }.
  */
 export async function loadPlanFromFile(file) {
   if (!file) {
-    throw new Error('Файл не выбран.');
+    throw new Error('Выберите файл плана квартиры.');
   }
 
   const isPdf =
@@ -125,12 +221,33 @@ export async function loadPlanFromFile(file) {
 
   const canvas = isPdf
     ? await renderPdfFirstPageToCanvas(file)
-    : await renderImageFileToCanvas(file);
+    : await renderImageFileToCanvas(file, IMAGE_MAX_SIDE_PX);
 
   return {
     canvas,
     width: canvas.width,
     height: canvas.height,
-    title: file.name || 'Загруженный план',
+    title: file.name || 'План квартиры',
+  };
+}
+
+/**
+ * Открывает скриншот спутниковой карты (JPG, PNG, WebP) и возвращает { canvas, width, height, title }.
+ */
+export async function loadSatelliteFromFile(file) {
+  if (!file) {
+    throw new Error('Выберите скриншот со спутника.');
+  }
+  const isPdf =
+    file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+  if (isPdf) {
+    throw new Error('Для спутникового снимка загрузите скриншот (JPG или PNG).');
+  }
+  const canvas = await renderImageFileToCanvas(file, SAT_MAX_SIDE_PX);
+  return {
+    canvas,
+    width: canvas.width,
+    height: canvas.height,
+    title: file.name || 'Снимок со спутника',
   };
 }
