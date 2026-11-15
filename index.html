@@ -125,6 +125,10 @@
                 </button>
               </div>
 
+              <p class="inline-hint" id="rotateSheetHint" hidden>
+                Карта уже развёрнута Севером вверх — поворот листа виден в режиме «Как на листе плана» и на шаге «2. На плане».
+              </p>
+
               <div class="warning-box" id="planErrorBox" hidden></div>
 
               <div class="secondary-row">
@@ -178,23 +182,24 @@
 
                   <!-- Правая карточка: План квартиры -->
                   <rect x="180" y="2" width="158" height="118" fill="#FAF8F4" stroke="#422326" stroke-width="1.2" />
-                  <text x="188" y="17" fill="#422326" font-family="Manrope, sans-serif" font-size="9.5" font-weight="600">2. Ваш план квартиры</text>
+                  <text x="188" y="16" fill="#422326" font-family="Manrope, sans-serif" font-size="9.5" font-weight="600">2. Ваш план квартиры</text>
                   <!-- Контур квартиры на листе -->
-                  <polygon points="206,44 302,44 302,94 206,94" fill="#FFFFFF" stroke="#422326" stroke-width="1.5" />
-                  <line x1="254" y1="44" x2="254" y2="94" stroke="#9B9089" stroke-width="1" />
+                  <polygon points="206,54 302,54 302,97 206,97" fill="#FFFFFF" stroke="#422326" stroke-width="1.5" />
+                  <line x1="254" y1="54" x2="254" y2="97" stroke="#9B9089" stroke-width="1" />
                   <!-- Та же стена 1 -> 2 на плане -->
-                  <line x1="206" y1="44" x2="302" y2="44" stroke="#76643A" stroke-width="3.2" />
-                  <polygon points="260,44 251,40 251,48" fill="#76643A" />
+                  <line x1="206" y1="54" x2="302" y2="54" stroke="#76643A" stroke-width="3.2" />
+                  <polygon points="246,54 237,50 237,58" fill="#76643A" />
                   <!-- Точка 1 -->
-                  <rect x="198" y="36" width="16" height="16" fill="#76643A" stroke="#FAF8F4" stroke-width="1.2" />
-                  <text x="206" y="47" text-anchor="middle" fill="#FAF8F4" font-family="Manrope, sans-serif" font-size="9.5" font-weight="700">1</text>
+                  <rect x="198" y="46" width="16" height="16" fill="#76643A" stroke="#FAF8F4" stroke-width="1.2" />
+                  <text x="206" y="57" text-anchor="middle" fill="#FAF8F4" font-family="Manrope, sans-serif" font-size="9.5" font-weight="700">1</text>
                   <!-- Точка 2 -->
-                  <rect x="294" y="36" width="16" height="16" fill="#76643A" stroke="#FAF8F4" stroke-width="1.2" />
-                  <text x="302" y="47" text-anchor="middle" fill="#FAF8F4" font-family="Manrope, sans-serif" font-size="9.5" font-weight="700">2</text>
-                  <!-- Полученная стрелка С -->
-                  <line x1="254" y1="72" x2="246" y2="27" stroke="#422326" stroke-width="1.6" stroke-dasharray="2.5,2" />
-                  <rect x="237" y="19" width="16" height="15" fill="#422326" stroke="#CABC90" stroke-width="1" />
-                  <text x="245" y="29.5" text-anchor="middle" fill="#CABC90" font-family="Manrope, sans-serif" font-size="8.8" font-weight="700">С</text>
+                  <rect x="294" y="46" width="16" height="16" fill="#76643A" stroke="#FAF8F4" stroke-width="1.2" />
+                  <text x="302" y="57" text-anchor="middle" fill="#FAF8F4" font-family="Manrope, sans-serif" font-size="9.5" font-weight="700">2</text>
+                  <!-- Полученная стрелка С (наклонена вправо в соответствии с поворотом стены 1 -> 2 со снимка) -->
+                  <line x1="250" y1="84" x2="262" y2="41" stroke="#422326" stroke-width="1.6" stroke-dasharray="2.5,2" />
+                  <polygon points="263.3,36.4 258.8,42.7 264.8,44.1" fill="#422326" />
+                  <rect x="256" y="21" width="16" height="14" fill="#422326" stroke="#CABC90" stroke-width="1" />
+                  <text x="264" y="31" text-anchor="middle" fill="#CABC90" font-family="Manrope, sans-serif" font-size="8.8" font-weight="700">С</text>
                   <text x="259" y="113" text-anchor="middle" fill="#655255" font-family="Manrope, sans-serif" font-size="8.8">Те же углы 1 → 2 по порядку</text>
                 </svg>
               </figure>
@@ -224,7 +229,7 @@
                 </div>
 
                 <p class="sat-step-hint" id="satStepHintText">
-                  Коснитесь двух углов одной наружной стены дома на снимке: сначала точки «1», затем точки «2».
+                  Разведите двумя пальцами, чтобы увеличить дом, и коснитесь двух углов одной наружной стены: сначала точки «1», затем точки «2».
                 </p>
 
                 <div class="sat-actions-row">
@@ -237,6 +242,9 @@
                 </div>
               </div>
 
+              <!-- Угол поворота дома относительно сторон света (в пределах ±45°) -->
+              <div class="sat-tilt-readout" id="satHouseTiltLine" hidden></div>
+
               <!-- Блок проверки после расчёта Севера по спутнику -->
               <div class="sat-verify-note" id="satVerifyBox" hidden>
                 <strong>Проверьте направление «С» на плане:</strong> окна вашей стены «1 → 2» смотрят в ту же сторону, что и на снимке. При необходимости стрелку «С» можно чуть подправить пальцем на чертеже или градусами ниже.
@@ -247,7 +255,7 @@
             <div class="panel-block subtle-card">
               <h3 class="sub-heading">Запасной способ</h3>
               <p class="small-copy">
-                Если угол поворота уже известен, введите градусы вручную или поверните стрелку «С» прямо на плане.
+                Если знаете, куда на листе смотрит Север, введите градусы по часовой стрелке от верха листа или поверните стрелку «С» прямо на плане.
               </p>
 
               <label class="field-label" for="northNumberInput">
@@ -388,6 +396,10 @@
                   </label>
                 </div>
 
+                <div class="inline-info-note" id="padaZoomHint" hidden>
+                  Приблизьте, чтобы увидеть все номера пад
+                </div>
+
                 <!-- Подпункты сетки пад (скрыты, когда сетка пад выключена; оба выключены по умолчанию) -->
                 <div class="pada-suboptions" id="padaSuboptions" hidden>
                   <label class="check-row sub-check">
@@ -409,8 +421,11 @@
                 </div>
 
                 <div class="export-cta-wrap">
-                  <button type="button" class="btn-primary-dark btn-full" id="exportPngBtn">
-                    Скачать карту для домашнего задания
+                  <button type="button" class="btn-primary-dark" id="exportPngBtn">
+                    Скачать карту
+                  </button>
+                  <button type="button" class="btn-outline" id="shareMapBtn">
+                    Поделиться
                   </button>
                 </div>
               </div>

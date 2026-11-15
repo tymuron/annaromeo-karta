@@ -10,8 +10,11 @@ import {
   isPointInPolygon,
   distance,
   CENTER_OUTSIDE_NOTE,
+  BRAHMASTAN_CLIPPED_NOTE,
+  BRAHMASTAN_CLIPPED_BADGE,
 } from './geometry.js';
 import { SECTORS, BRAHMASTAN_META } from './vastu-data.js';
+import { computePlanViewRotationDeg } from './state-helpers.js';
 
 /**
  * Создаёт матрицу преобразования из координат изображения (px)
@@ -287,6 +290,8 @@ function renderSatelliteScene(ctx, state, options) {
     transform: xf,
     northHandleScreen: null,
     placedBadges: [],
+    hiddenPadasCount: 0,
+    totalPadasCount: 0,
     isSatelliteView: true,
   };
 }
@@ -301,6 +306,7 @@ export function renderScene(ctx, state, options = {}) {
     dpr = 1,
     isExport = false,
     backgroundColor = '#31181B',
+    extraBlockedRects = [],
   } = options;
 
   if (
@@ -347,14 +353,15 @@ export function renderScene(ctx, state, options = {}) {
   const hasValidNorth = Boolean(northSet && Number.isFinite(northAngleDeg));
   const isPickingPlanWall = !isExport && activeTab === 'plan' && satViewMode === 'plan-pick';
 
-  let rotationDeg = 0;
-  if (isPickingPlanWall) {
-    rotationDeg = 0;
-  } else if (!isExport && Number.isFinite(frozenRotationDeg)) {
-    rotationDeg = frozenRotationDeg;
-  } else if (hasValidNorth && alignNorthUp) {
-    rotationDeg = -normalizeDeg(northAngleDeg);
-  }
+  const rotationDeg = computePlanViewRotationDeg({
+    isExport,
+    activeTab,
+    satViewMode,
+    northSet,
+    northAngleDeg,
+    alignNorthUp,
+    frozenRotationDeg,
+  });
 
   const xf = createViewportTransform({
     planWidth,
@@ -387,7 +394,13 @@ export function renderScene(ctx, state, options = {}) {
 
   if (!planCanvas) {
     ctx.restore();
-    return { transform: xf, northHandleScreen: null, placedBadges: [] };
+    return {
+      transform: xf,
+      northHandleScreen: null,
+      placedBadges: [],
+      hiddenPadasCount: 0,
+      totalPadasCount: 0,
+    };
   }
 
   // 2. Вход в координаты плана (с учётом панорамирования, масштаба и поворота «Север сверху»)
@@ -483,15 +496,22 @@ export function renderScene(ctx, state, options = {}) {
     }
     ctx.setLineDash([]);
 
-    const bsPath = buildPiecesPath2D(bs.pieces);
+    const bsFillLoops =
+      bs.outlineLoops && bs.outlineLoops.length > 0 ? bs.outlineLoops : bs.pieces;
+    const bsOutlinePath =
+      bs.wasClipped
+        ? buildPiecesPath2D(bsFillLoops)
+        : buildPolygonPath2D(bs.rawVertices);
+
     ctx.fillStyle = BRAHMASTAN_META.fillColor;
     ctx.globalAlpha = 0.85;
-    ctx.fill(bsPath);
+    ctx.fill(bsOutlinePath);
 
     ctx.globalAlpha = 1;
     ctx.strokeStyle = BRAHMASTAN_META.strokeColor;
     ctx.lineWidth = (isExport ? 2.6 : 2.1) / zoom;
-    ctx.stroke(bs.wasClipped ? bsPath : buildPolygonPath2D(bs.rawVertices));
+    ctx.lineJoin = 'miter';
+    ctx.stroke(bsOutlinePath);
 
     ctx.fillStyle = BRAHMASTAN_META.strokeColor;
     const dotR = (isExport ? 3.2 : 2.6) / zoom;
@@ -537,7 +557,11 @@ export function renderScene(ctx, state, options = {}) {
             : 'rgba(118, 100, 58, 0.48)';
         ctx.lineWidth = (isExport ? 1.35 : 1.1) / zoom;
         ctx.setLineDash(belt.id === 'bindu' ? [] : [5 / zoom, 4 / zoom]);
-        ctx.stroke(buildPiecesPath2D(belt.pieces));
+        const beltLoops =
+          belt.outlineLoops && belt.outlineLoops.length > 0
+            ? belt.outlineLoops
+            : belt.pieces;
+        ctx.stroke(buildPiecesPath2D(beltLoops));
       }
       ctx.setLineDash([]);
     }
@@ -595,10 +619,11 @@ export function renderScene(ctx, state, options = {}) {
   const fontScale = isExport ? 1.35 : 1;
   const placedBadges = [];
   const hudBlockedRects = isExport
-    ? []
+    ? [...extraBlockedRects]
     : [
         { x1: 0, y1: 0, x2: viewWidth, y2: 50 },
         { x1: viewWidth - 180, y1: viewHeight - 54, x2: viewWidth, y2: viewHeight },
+        ...extraBlockedRects,
       ];
 
   function hasCollision(candidateRect, gap = 3, checkHud = false) {
@@ -613,10 +638,23 @@ export function renderScene(ctx, state, options = {}) {
     return false;
   }
 
-  // 7.0. Опорные точки «1» и «2» стены на плане (во вкладке «План и север»)
-  if (!isExport && activeTab === 'plan' && sat && sat.planPts && sat.planPts.length > 0) {
+  // 7.0. Опорные точки «1» и «2» стены на плане (во вкладке «План и север»; в «Проверка С» — только для показа)
+  if (
+    !isExport &&
+    activeTab === 'plan' &&
+    sat &&
+    sat.canvas &&
+    (satViewMode === 'plan-pick' || satViewMode === 'done') &&
+    sat.planPts &&
+    sat.planPts.length > 0
+  ) {
     const planWallScreenPts = sat.planPts.map((p) => xf.planToScreen(p));
+    ctx.save();
+    if (satViewMode === 'done') {
+      ctx.globalAlpha = 0.85;
+    }
     drawWallSegmentMarkers(ctx, planWallScreenPts, '#76643A', '#FAF8F4');
+    ctx.restore();
   }
 
   // 7.1. Стрелка направления на Север «С» (строго вне контура квартиры; двигается только во вкладке севера)
@@ -803,11 +841,18 @@ export function renderScene(ctx, state, options = {}) {
     ctx.lineTo(cScreen.x, cScreen.y + 13 * fontScale);
     ctx.stroke();
 
+    const isClippedByWall = Boolean(
+      !vastuMap.centerOutsideOrClipped &&
+        vastuMap.brahmastan &&
+        vastuMap.brahmastan.wasClipped
+    );
     const labelText = vastuMap.centerOutsideOrClipped
       ? CENTER_OUTSIDE_NOTE
-      : showBrahmastan
-        ? 'Брахмастан · Центр'
-        : 'Центр квартиры';
+      : isClippedByWall && showBrahmastan
+        ? BRAHMASTAN_CLIPPED_BADGE
+        : showBrahmastan
+          ? 'Брахмастан · Центр'
+          : 'Центр квартиры';
 
     const fPx = Math.round((viewWidth < 500 && !isExport ? 10.5 : 11.5) * fontScale);
     ctx.font = `600 ${fPx}px Manrope, sans-serif`;
@@ -935,15 +980,25 @@ export function renderScene(ctx, state, options = {}) {
     ctx.restore();
   }
 
-  // 7.4. Номера 32 пад по внешнему периметру (с разведением в 2 эшелона или пропуском тесных номеров)
+  // 7.4. Номера 32 пад по внешнему периметру:
+  // - в сохранённой картинке (isExport) размещаются ВСЕ 32 номера без пропусков (компактный шрифт или тонкая выноска при тесноте);
+  // - на экране считаем скрытые из-за тесноты номера, чтобы показать подсказку «Приблизьте, чтобы увидеть все номера пад».
+  let totalPadasCount = 0;
+  let placedPadasCount = 0;
+
   if (canShowMapLayers && showPadas && vastuMap.padaGrid) {
     ctx.save();
-    const badgeFontPx = Math.round((viewWidth < 520 || viewHeight < 440 ? 9.5 : 11) * fontScale);
-    ctx.font = `600 ${badgeFontPx}px Manrope, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    const baseOffset = (showPadaScores ? 18 : 14) * fontScale;
+    const centerScreen = xf.planToScreen(vastuMap.center);
+    const normalFontPx = isExport
+      ? showPadaScores
+        ? 12
+        : 13
+      : Math.round(viewWidth < 520 || viewHeight < 440 ? 9.5 : 11);
+    const compactFontPx = isExport ? 11 : Math.max(8.5, normalFontPx - 1);
+
     const prioritySet = new Set([1, 5, 9, 13, 17, 21, 25, 29]);
     const orderedPadas = [
       ...vastuMap.padaGrid.padas.filter((p) => prioritySet.has(p.number)),
@@ -952,40 +1007,132 @@ export function renderScene(ctx, state, options = {}) {
 
     for (const pada of orderedPadas) {
       if (!pada.outerWallHit) continue;
+      totalPadasCount++;
+
       const wallScreen = xf.planToScreen(pada.outerWallHit);
       const outDir = computeExteriorWallScreenDir(pada, vastuMap, xf);
+      const tangDir = { x: -outDir.y, y: outDir.x };
+      const rDx = wallScreen.x - centerScreen.x;
+      const rDy = wallScreen.y - centerScreen.y;
+      const rLen = Math.hypot(rDx, rDy) || 1;
+      const rayDir = { x: rDx / rLen, y: rDy / rLen };
 
       const scoreSuffix = showPadaScores
         ? ` (${pada.score > 0 ? `+${pada.score}` : pada.score})`
         : '';
       const text = `${pada.number}${scoreSuffix}`;
-      const metrics = ctx.measureText(text);
-      const padW = Math.max(badgeFontPx + 6 * fontScale, metrics.width + 7 * fontScale);
-      const padH = badgeFontPx + 5 * fontScale;
 
-      const offsetsToTry = isExport
-        ? [baseOffset, baseOffset + padH + 3, baseOffset + (padH + 3) * 2]
-        : [baseOffset, baseOffset + padH + 2];
+      const measureForFont = (fPx) => {
+        ctx.font = `600 ${fPx}px Manrope, sans-serif`;
+        const w = ctx.measureText(text).width;
+        const padX = isExport ? 8 : 6;
+        const padY = isExport ? 6 : 5;
+        return {
+          fontPx: fPx,
+          padW: Math.max(fPx + padX, w + padX + 1),
+          padH: fPx + padY,
+        };
+      };
 
-      let finalX = null;
-      let finalY = null;
-      let finalRect = null;
+      const stdDims = measureForFont(normalFontPx);
+      const baseOff = isExport
+        ? showPadaScores
+          ? 20
+          : 16
+        : showPadaScores
+          ? 17
+          : 13;
 
-      for (const distOff of offsetsToTry) {
-        const bx = wallScreen.x + outDir.x * distOff;
-        const by = wallScreen.y + outDir.y * distOff;
-        const rect = makeRect(bx, by, padW, padH);
+      let chosen = null;
+
+      // Эшелон 1: вплотную к наружной стене без выноски
+      const nearCandidates = isExport
+        ? [
+            [outDir, baseOff, 0],
+            [outDir, baseOff + stdDims.padH + 4, 0],
+            [outDir, baseOff, -14],
+            [outDir, baseOff, 14],
+            [rayDir, baseOff + 2, 0],
+            [outDir, baseOff + (stdDims.padH + 4) * 2, 0],
+            [outDir, baseOff + stdDims.padH + 4, -18],
+            [outDir, baseOff + stdDims.padH + 4, 18],
+            [rayDir, -baseOff - 2, 0],
+          ]
+        : [
+            [outDir, baseOff, 0],
+            [outDir, baseOff + stdDims.padH + 2, 0],
+            [outDir, baseOff, -10],
+            [outDir, baseOff, 10],
+          ];
+
+      for (const [dirVec, distOff, latOff] of nearCandidates) {
+        const bx = wallScreen.x + dirVec.x * distOff + tangDir.x * latOff;
+        const by = wallScreen.y + dirVec.y * distOff + tangDir.y * latOff;
+        const rect = makeRect(bx, by, stdDims.padW, stdDims.padH);
         if (!isRectInsideView(rect, viewWidth, viewHeight, 3)) continue;
-        if (!hasCollision(rect, 2, true)) {
-          finalX = bx;
-          finalY = by;
-          finalRect = rect;
+        if (!hasCollision(rect, isExport ? 2 : 1.5, true)) {
+          chosen = {
+            x: bx,
+            y: by,
+            rect,
+            dims: stdDims,
+            useLeader: false,
+          };
           break;
         }
       }
 
-      if (!finalRect) continue;
-      placedBadges.push({ ...finalRect, kind: 'pada', number: pada.number });
+      // Эшелон 2 (только для экспорта в PNG): ни один из 32 номеров не пропускается —
+      // при тесноте во внутреннем углу берём компактный шрифт и аккуратную тонкую выноску
+      if (!chosen && isExport) {
+        const smallDims = measureForFont(compactFontPx);
+        const baseAngle = Math.atan2(outDir.y, outDir.x);
+        const angleOffsetsDeg = [
+          0, -18, 18, -36, 36, -54, 54, -72, 72, -90, 90, -115, 115, -145, 145, 180,
+        ];
+        const radii = [38, 56, 76, 96, 118, 142, 168];
+
+        outerSearch: for (const radDist of radii) {
+          for (const aDeg of angleOffsetsDeg) {
+            const ang = baseAngle + (aDeg * Math.PI) / 180;
+            const bx = wallScreen.x + Math.cos(ang) * radDist;
+            const by = wallScreen.y + Math.sin(ang) * radDist;
+            const rect = makeRect(bx, by, smallDims.padW, smallDims.padH);
+            if (!isRectInsideView(rect, viewWidth, viewHeight, 4)) continue;
+            if (!hasCollision(rect, 1.5, true)) {
+              chosen = {
+                x: bx,
+                y: by,
+                rect,
+                dims: smallDims,
+                useLeader: radDist >= 34,
+              };
+              break outerSearch;
+            }
+          }
+        }
+      }
+
+      if (!chosen) continue;
+
+      placedPadasCount++;
+      placedBadges.push({ ...chosen.rect, kind: 'pada', number: pada.number });
+
+      if (chosen.useLeader) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(66, 35, 38, 0.52)';
+        ctx.lineWidth = 1.15;
+        ctx.beginPath();
+        ctx.moveTo(wallScreen.x, wallScreen.y);
+        ctx.lineTo(chosen.x, chosen.y);
+        ctx.stroke();
+
+        ctx.fillStyle = '#422326';
+        ctx.beginPath();
+        ctx.arc(wallScreen.x, wallScreen.y, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
 
       const isGood = pada.score > 0;
       const bg = showPadaScores && isGood ? '#E4EFEA' : '#FAF8F4';
@@ -994,13 +1141,24 @@ export function renderScene(ctx, state, options = {}) {
       const fg = showPadaScores && isGood ? '#1E3F33' : '#422326';
 
       ctx.fillStyle = bg;
-      ctx.fillRect(finalRect.x1, finalRect.y1, padW, padH);
+      ctx.fillRect(
+        chosen.rect.x1,
+        chosen.rect.y1,
+        chosen.dims.padW,
+        chosen.dims.padH
+      );
       ctx.strokeStyle = border;
       ctx.lineWidth = 1;
-      ctx.strokeRect(finalRect.x1, finalRect.y1, padW, padH);
+      ctx.strokeRect(
+        chosen.rect.x1,
+        chosen.rect.y1,
+        chosen.dims.padW,
+        chosen.dims.padH
+      );
 
+      ctx.font = `600 ${chosen.dims.fontPx}px Manrope, sans-serif`;
       ctx.fillStyle = fg;
-      ctx.fillText(text, finalX, finalY + 0.5);
+      ctx.fillText(text, chosen.x, chosen.y + 0.5);
     }
     ctx.restore();
   }
@@ -1049,6 +1207,9 @@ export function renderScene(ctx, state, options = {}) {
     transform: xf,
     northHandleScreen,
     placedBadges,
+    totalPadasCount,
+    placedPadasCount,
+    hiddenPadasCount: Math.max(0, totalPadasCount - placedPadasCount),
     isSatelliteView: false,
   };
 }
@@ -1105,10 +1266,20 @@ export function exportMapToPngCanvas(state) {
   ctx.textBaseline = 'middle';
   ctx.fillText('ВАСТУ-КАРТА ПРОСТРАНСТВА', 64, headerH * 0.5);
 
+  const isBrahmastanWallClipped = Boolean(
+    !vastuMap.centerOutsideOrClipped &&
+      vastuMap.brahmastan &&
+      vastuMap.brahmastan.wasClipped
+  );
+
   const activeLayerNames = [];
   if (layers.showSectors) activeLayerNames.push('8 секторов');
   if (layers.showBrahmastan && !vastuMap.centerOutsideOrClipped) {
-    activeLayerNames.push('Брахмастан по форме квартиры');
+    activeLayerNames.push(
+      isBrahmastanWallClipped
+        ? BRAHMASTAN_CLIPPED_BADGE
+        : 'Брахмастан по форме квартиры'
+    );
   }
   if (layers.showPadas) activeLayerNames.push('Сетка 32 пад');
 
@@ -1128,7 +1299,7 @@ export function exportMapToPngCanvas(state) {
   const rotatedW = planWidth * absCos + planHeight * absSin;
   const rotatedH = planWidth * absSin + planHeight * absCos;
 
-  const padMargin = 130;
+  const padMargin = 156;
   const fitZoom = Math.min(
     (outWidth - padMargin * 2) / Math.max(1, rotatedW),
     (mapStageH - padMargin * 2) / Math.max(1, rotatedH)
@@ -1139,7 +1310,15 @@ export function exportMapToPngCanvas(state) {
   stageCanvas.height = mapStageH;
   const stageCtx = stageCanvas.getContext('2d');
 
-  renderScene(
+  // Резервируем правый верхний угол поля под розу Севера, чтобы подписи пад не заходили под неё
+  const roseStageRect = {
+    x1: outWidth - 186,
+    y1: 42,
+    x2: outWidth - 42,
+    y2: 186,
+  };
+
+  const exportRenderMeta = renderScene(
     stageCtx,
     {
       ...state,
@@ -1155,6 +1334,7 @@ export function exportMapToPngCanvas(state) {
       dpr: 1,
       isExport: true,
       backgroundColor: '#FAF8F4',
+      extraBlockedRects: [roseStageRect],
     }
   );
 
@@ -1263,6 +1443,10 @@ export function exportMapToPngCanvas(state) {
     ctx.fillStyle = '#422326';
     ctx.font = '600 18px Manrope, sans-serif';
     ctx.fillText(CENTER_OUTSIDE_NOTE, 64, sigY);
+  } else if (isBrahmastanWallClipped) {
+    ctx.fillStyle = '#422326';
+    ctx.font = '500 17px Manrope, sans-serif';
+    ctx.fillText(BRAHMASTAN_CLIPPED_NOTE, 64, sigY);
   } else if (layers.showBrahmastan) {
     ctx.fillStyle = '#6E5A5D';
     ctx.font = '400 17px Manrope, sans-serif';
@@ -1273,5 +1457,6 @@ export function exportMapToPngCanvas(state) {
     );
   }
 
+  canvas.__exportRenderMeta = exportRenderMeta;
   return canvas;
 }

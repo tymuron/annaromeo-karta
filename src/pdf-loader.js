@@ -19,9 +19,10 @@ let pdfjsPromise = null;
 
 async function loadPdfJs() {
   if (!pdfjsPromise) {
-    pdfjsPromise = import('../vendor/pdf.min.mjs')
+    pdfjsPromise = import('./pdf-polyfills.mjs')
+      .then(() => import('../vendor/pdf.min.mjs'))
       .then((mod) => {
-        const workerUrl = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
+        const workerUrl = new URL('../vendor/pdf.worker.entry.mjs', import.meta.url).href;
         mod.GlobalWorkerOptions.workerSrc = workerUrl;
         return mod;
       })

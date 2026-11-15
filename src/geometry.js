@@ -78,6 +78,32 @@ export function northAngleFromWallSegments(satPoint1, satPoint2, planPoint1, pla
   return normalizeDeg(planWallAzimuth - satWallAzimuth);
 }
 
+/**
+ * Вычисляет угол поворота дома относительно сторон света по стене на спутниковом снимке:
+ * направление стены по модулю 90°, приведённое к диапазону (-45°, +45°].
+ * Не зависит от того, какая из четырёх взаимно перпендикулярных стен выбрана и в каком порядке поставлены 1 и 2.
+ */
+export function houseTiltFromSatelliteWall(satPoint1, satPoint2) {
+  if (
+    !satPoint1 ||
+    !satPoint2 ||
+    !Number.isFinite(satPoint1.x) ||
+    !Number.isFinite(satPoint1.y) ||
+    !Number.isFinite(satPoint2.x) ||
+    !Number.isFinite(satPoint2.y)
+  ) {
+    return null;
+  }
+  const dx = satPoint2.x - satPoint1.x;
+  const dy = satPoint2.y - satPoint1.y;
+  if (Math.hypot(dx, dy) < 1e-6) return null;
+
+  const az = vectorToAzimuthDeg(dx, dy);
+  const mod90 = ((az % 90) + 90) % 90;
+  const tilt = mod90 > 45 ? mod90 - 90 : mod90;
+  return Object.is(tilt, -0) || Math.abs(tilt) < 1e-12 ? 0 : tilt;
+}
+
 /** Расстояние между двумя точками. */
 export function distance(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -453,6 +479,131 @@ export function intersectPolygons(polyA, polyB) {
   return { pieces, area: totalArea };
 }
 
+/**
+ * Извлекает только внешний контур (замкнутые граничные петли без внутренних швов триангуляции)
+ * для набора неперекрывающихся кусков многоугольника pieces.
+ */
+export function extractPiecesBoundaryLoops(pieces) {
+  if (!Array.isArray(pieces) || pieces.length === 0) return [];
+
+  const orientedPieces = [];
+  for (const rawPoly of pieces) {
+    let pts = cleanPolygonVertices(rawPoly, 1e-5);
+    if (pts.length < 3 || polygonArea(pts) <= 1e-7) continue;
+    if (polygonSignedArea(pts) < 0) {
+      pts = [...pts].reverse();
+    }
+    orientedPieces.push(pts);
+  }
+
+  if (orientedPieces.length === 0) return [];
+  if (orientedPieces.length === 1) {
+    const single = simplifyCollinear(orientedPieces[0]);
+    return single.length >= 3 ? [single] : [orientedPieces[0]];
+  }
+
+  const SNAP_TOL = 1e-4;
+  const canonicalNodes = [];
+
+  function getCanonicalNodeIndex(pt) {
+    for (let i = 0; i < canonicalNodes.length; i++) {
+      if (distance(canonicalNodes[i], pt) <= SNAP_TOL) {
+        return i;
+      }
+    }
+    canonicalNodes.push({ x: pt.x, y: pt.y });
+    return canonicalNodes.length - 1;
+  }
+
+  const indexedPieces = orientedPieces.map((poly) =>
+    poly.map((pt) => getCanonicalNodeIndex(pt))
+  );
+
+  // Разбиваем каждое ребро промежуточными каноническими вершинами (устранение T-стыков)
+  const rawDirectedEdges = [];
+  for (const nodeLoop of indexedPieces) {
+    const m = nodeLoop.length;
+    for (let i = 0; i < m; i++) {
+      const aIdx = nodeLoop[i];
+      const bIdx = nodeLoop[(i + 1) % m];
+      if (aIdx === bIdx) continue;
+      const a = canonicalNodes[aIdx];
+      const b = canonicalNodes[bIdx];
+      const segLen = distance(a, b);
+      if (segLen <= SNAP_TOL) continue;
+
+      const mids = [];
+      for (let k = 0; k < canonicalNodes.length; k++) {
+        if (k === aIdx || k === bIdx) continue;
+        const cand = canonicalNodes[k];
+        const proj = projectPointToSegment(cand, a, b);
+        if (proj.dist <= SNAP_TOL && proj.t > 1e-5 && proj.t < 1 - 1e-5) {
+          mids.push({ idx: k, t: proj.t });
+        }
+      }
+      mids.sort((p, q) => p.t - q.t);
+
+      const chain = [aIdx, ...mids.map((item) => item.idx), bIdx];
+      for (let c = 0; c < chain.length - 1; c++) {
+        if (chain[c] !== chain[c + 1]) {
+          rawDirectedEdges.push([chain[c], chain[c + 1]]);
+        }
+      }
+    }
+  }
+
+  // Взаимно уничтожаем внутренние швы (пары встречных рёбер u->v и v->u)
+  const edgeCounts = new Map();
+  for (const [u, v] of rawDirectedEdges) {
+    const revKey = `${v}:${u}`;
+    const revCount = edgeCounts.get(revKey) || 0;
+    if (revCount > 0) {
+      if (revCount === 1) edgeCounts.delete(revKey);
+      else edgeCounts.set(revKey, revCount - 1);
+    } else {
+      const fwdKey = `${u}:${v}`;
+      edgeCounts.set(fwdKey, (edgeCounts.get(fwdKey) || 0) + 1);
+    }
+  }
+
+  const outgoing = new Map();
+  for (const [key, count] of edgeCounts.entries()) {
+    const [uStr, vStr] = key.split(':');
+    const u = Number(uStr);
+    const v = Number(vStr);
+    if (!outgoing.has(u)) outgoing.set(u, []);
+    for (let c = 0; c < count; c++) {
+      outgoing.get(u).push(v);
+    }
+  }
+
+  const loops = [];
+  for (const startNode of outgoing.keys()) {
+    while (outgoing.has(startNode) && outgoing.get(startNode).length > 0) {
+      const loopPts = [];
+      let curr = startNode;
+      let guard = rawDirectedEdges.length + 10;
+      while (guard-- > 0) {
+        loopPts.push(canonicalNodes[curr]);
+        const nextList = outgoing.get(curr);
+        if (!nextList || nextList.length === 0) break;
+        const next = nextList.pop();
+        if (nextList.length === 0) outgoing.delete(curr);
+        curr = next;
+        if (curr === startNode) break;
+      }
+      if (loopPts.length >= 3) {
+        const simplified = simplifyCollinear(loopPts);
+        if (simplified.length >= 3 && polygonArea(simplified) > 1e-7) {
+          loops.push(simplified);
+        }
+      }
+    }
+  }
+
+  return loops;
+}
+
 /** Масштабирует многоугольник гомотетично относительно центра C с коэффициентом scale. */
 export function scalePolygonFromCenter(vertices, center, scale) {
   return cleanPolygonVertices(vertices).map((v) => ({
@@ -526,6 +677,9 @@ function maxDistanceFromCenter(center, vertices) {
 }
 
 export const CENTER_OUTSIDE_NOTE = 'Центр вне стен — покажите эту карту Анне';
+export const BRAHMASTAN_CLIPPED_NOTE =
+  'Брахмастан прижат к наружной стене (обрезан по контуру квартиры)';
+export const BRAHMASTAN_CLIPPED_BADGE = 'Брахмастан обрезан стеной';
 
 /**
  * Брахмастан по форме квартиры (Р8 и Р9, _resheniya-anny.md:23-24; С. А. Балута, т. 2, с. 42–43):
@@ -546,6 +700,11 @@ export function computeBrahmastan(vertices, centerInput = null) {
   const rawArea = polygonArea(rawVertices);
   const { pieces, area } = intersectPolygons(rawVertices, pts);
   const wasClipped = rawArea - area > Math.max(1e-5, rawArea * 1e-5);
+  const outlineLoops = wasClipped
+    ? extractPiecesBoundaryLoops(pieces)
+    : rawVertices.length >= 3
+      ? [rawVertices]
+      : [];
   const retainedRatio = rawArea > 0 ? area / rawArea : 0;
   const isEmpty = area <= 1e-5 || pieces.length === 0;
   const isMostlyClipped = isEmpty || retainedRatio < 0.25;
@@ -562,6 +721,7 @@ export function computeBrahmastan(vertices, centerInput = null) {
     centerInside,
     rawVertices,
     pieces,
+    outlineLoops,
     rawArea,
     area,
     retainedRatio,
@@ -740,11 +900,19 @@ export function computePadaGrid(vertices, centerInput = null, northAngleDeg = 0)
 
   const belts = CONCENTRIC_BELTS.map((belt) => {
     const rawVertices = scalePolygonFromCenter(pts, center, belt.scale);
+    const rawArea = polygonArea(rawVertices);
     const { pieces, area } = intersectPolygons(rawVertices, pts);
+    const wasClipped = rawArea - area > Math.max(1e-5, rawArea * 1e-5);
+    const outlineLoops = wasClipped
+      ? extractPiecesBoundaryLoops(pieces)
+      : rawVertices.length >= 3
+        ? [rawVertices]
+        : [];
     return {
       ...belt,
       rawVertices,
       pieces,
+      outlineLoops,
       area,
     };
   });
@@ -772,6 +940,15 @@ export function buildVastuMap(vertices, northAngleDeg = null) {
   const centerOutsideOrClipped =
     !centerInside || !brahmastan || brahmastan.isMostlyClipped;
   const centerNote = centerOutsideOrClipped ? CENTER_OUTSIDE_NOTE : null;
+  const brahmastanClippedByWall = Boolean(
+    brahmastan && brahmastan.wasClipped && !brahmastan.isEmpty
+  );
+  const brahmastanClippedNote = brahmastanClippedByWall
+    ? BRAHMASTAN_CLIPPED_NOTE
+    : null;
+  const brahmastanClippedBadge = brahmastanClippedByWall
+    ? BRAHMASTAN_CLIPPED_BADGE
+    : null;
 
   const hasNorth =
     northAngleDeg !== null &&
@@ -790,6 +967,9 @@ export function buildVastuMap(vertices, northAngleDeg = null) {
     centerInside,
     centerOutsideOrClipped,
     centerNote,
+    brahmastanClippedByWall,
+    brahmastanClippedNote,
+    brahmastanClippedBadge,
     selfIntersects,
     northSet: hasNorth,
     northAngleDeg: normalizedNorth,

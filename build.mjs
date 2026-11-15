@@ -93,6 +93,17 @@ for (const file of ['pdf.min.mjs', 'pdf.worker.min.mjs']) {
   fs.copyFileSync(path.join(pdfLegacyBuildDir, file), path.join(vendorDir, file));
 }
 
+// Полифил Promise.withResolvers (и сопутствующих методов) для iOS < 17.4 + обёртка модульного воркера
+fs.copyFileSync(
+  path.join(__dirname, 'src', 'pdf-polyfills.mjs'),
+  path.join(vendorDir, 'pdf-polyfills.mjs')
+);
+fs.writeFileSync(
+  path.join(vendorDir, 'pdf.worker.entry.mjs'),
+  "import './pdf-polyfills.mjs';\nimport './pdf.worker.min.mjs';\n",
+  'utf8'
+);
+
 copyDir(
   path.join(__dirname, 'node_modules', 'pdfjs-dist', 'wasm'),
   path.join(vendorDir, 'wasm')
