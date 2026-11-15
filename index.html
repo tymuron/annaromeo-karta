@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Васту-карта · Анна Ромео</title>
+  <link rel="stylesheet" href="./styles/fonts.css" />
+  <link rel="stylesheet" href="./styles/main.css" />
+</head>
+<body>
+  <div class="studio-shell" id="studioShell">
+    <!-- Верхняя бордовая шапка бренда Анны Ромео -->
+    <header class="topbar">
+      <div class="brand-lockup">
+        <span class="brand-author">АННА РОМЕО</span>
+        <span class="brand-divider" aria-hidden="true">·</span>
+        <h1 class="brand-title">Васту-карта</h1>
+      </div>
+
+      <div class="topbar-actions">
+        <label class="btn-burgundy-ghost file-trigger" for="planFileInput" title="Загрузить фото, скан JPG/PNG или PDF">
+          <span class="desktop-label">Загрузить план</span>
+          <span class="mobile-label">Новый план</span>
+        </label>
+        <input
+          type="file"
+          id="planFileInput"
+          accept="image/png,image/jpeg,image/webp,application/pdf,.pdf"
+          hidden
+        />
+        <button type="button" class="btn-burgundy-gold" id="topExportBtn">
+          <span class="desktop-label">Сохранить PNG</span>
+          <span class="mobile-label">PNG</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Рабочее пространство: интерактивный чертёж + инструментальная панель -->
+    <main class="workspace">
+      <!-- Область плана квартиры -->
+      <section class="canvas-stage" id="canvasStage" aria-label="Чертёж Васту-карты">
+        <canvas id="mapCanvas"></canvas>
+
+        <!-- Живая строка подсказки поверх холста -->
+        <div class="canvas-hud-top">
+          <div class="status-banner" id="canvasStatusBanner">
+            Готовая карта · 8 секторов и Брахмастан по форме квартиры
+          </div>
+          <button
+            type="button"
+            class="hud-btn mobile-only"
+            id="toggleCanvasSizeBtn"
+            title="Увеличить или уменьшить область чертежа"
+          >
+            Крупнее
+          </button>
+        </div>
+
+        <!-- Плавающие кнопки масштаба и листа -->
+        <div class="canvas-controls" role="group" aria-label="Масштаб чертежа">
+          <button type="button" class="hud-icon-btn" id="zoomInBtn" aria-label="Приблизить план" title="Приблизить">+</button>
+          <button type="button" class="hud-icon-btn" id="zoomOutBtn" aria-label="Отдалить план" title="Отдалить">−</button>
+          <button type="button" class="hud-icon-btn hud-text-btn" id="zoomFitBtn" title="Вписать план в экран">Вписать</button>
+        </div>
+      </section>
+
+      <!-- Панель инструментов (свободное переключение вкладок без шагов 01/02 и кнопок Назад/Далее) -->
+      <aside class="inspector-panel" aria-label="Инструменты построения карты">
+        <nav class="mode-tabs" role="tablist" aria-label="Режимы конструктора">
+          <button
+            type="button"
+            role="tab"
+            class="mode-tab"
+            id="tabBtnPlan"
+            data-tab="plan"
+            aria-selected="false"
+            aria-controls="panelPlan"
+          >
+            План и север
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="mode-tab"
+            id="tabBtnContour"
+            data-tab="contour"
+            aria-selected="false"
+            aria-controls="panelContour"
+          >
+            Контур стен
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="mode-tab is-active"
+            id="tabBtnLayers"
+            data-tab="layers"
+            aria-selected="true"
+            aria-controls="panelLayers"
+          >
+            Слои карты
+          </button>
+        </nav>
+
+        <div class="inspector-scroll">
+          <!-- ВКЛАДКА: ПЛАН И СЕВЕР -->
+          <section class="tab-pane" id="panelPlan" role="tabpanel" aria-labelledby="tabBtnPlan" hidden>
+            <div class="panel-block">
+              <h2 class="block-heading">План квартиры</h2>
+              <p class="block-lead">
+                Подойдёт скан БТИ, планировка от застройщика или чёткое фото сверху (JPG, PNG или первая страница PDF).
+              </p>
+
+              <div class="button-row">
+                <label class="btn-primary-dark file-trigger" for="planFileInput">
+                  Выбрать файл плана
+                </label>
+                <button type="button" class="btn-outline" id="rotatePlan90Btn">
+                  Повернуть лист на 90°
+                </button>
+              </div>
+
+              <div class="secondary-row">
+                <span class="current-file-label" id="currentPlanTitle">Учебный план (Г-образная квартира)</span>
+                <button type="button" class="link-action" id="loadSampleBtn">
+                  Вернуть учебный план
+                </button>
+              </div>
+
+              <p class="privacy-note">
+                План никуда не отправляется: все расчёты выполняются только на вашем устройстве без внешних карт и сервисов.
+              </p>
+            </div>
+
+            <div class="panel-block">
+              <div class="heading-with-value">
+                <h2 class="block-heading">Направление на Север</h2>
+                <span class="north-readout" id="northReadoutBadge">22°</span>
+              </div>
+              <p class="block-lead">
+                Поверните стрелку «С» прямо на чертеже или задайте точный угол в градусах.
+              </p>
+
+              <div class="north-input-row">
+                <input
+                  type="range"
+                  id="northSlider"
+                  min="0"
+                  max="359"
+                  step="1"
+                  value="22"
+                  aria-label="Угол направления на Север на плане"
+                />
+                <div class="degree-box">
+                  <input
+                    type="number"
+                    id="northNumberInput"
+                    min="0"
+                    max="359.9"
+                    step="0.5"
+                    value="22"
+                    aria-label="Градусы Севера"
+                  />
+                  <span>°</span>
+                </div>
+              </div>
+
+              <div class="quick-angles" role="group" aria-label="Быстрый поворот Севера">
+                <button type="button" class="chip-btn" data-north="0">Сверху 0°</button>
+                <button type="button" class="chip-btn" data-north="90">Справа 90°</button>
+                <button type="button" class="chip-btn" data-north="180">Снизу 180°</button>
+                <button type="button" class="chip-btn" data-north="270">Слева 270°</button>
+              </div>
+            </div>
+
+            <div class="panel-block subtle-card">
+              <h3 class="sub-heading">Перевод с компаса телефона</h3>
+              <p class="small-copy">
+                Как измерить: встаньте в центре комнаты лицом к ровной наружной стене (отойдите на шаг от металлических дверей, батарей и бытовой техники). Положите телефон горизонтально на ладонь и посмотрите градусы компаса.
+              </p>
+
+              <div class="compass-calc-grid">
+                <label class="field-label" for="wallSelect">
+                  Куда на плане смотрит эта стена
+                  <select id="wallSelect" class="square-select">
+                    <option value="0">Вверх по плану (↑)</option>
+                    <option value="90">Вправо по плану (→)</option>
+                    <option value="180">Вниз по плану (↓)</option>
+                    <option value="270">Влево по плану (←)</option>
+                  </select>
+                </label>
+
+                <label class="field-label" for="compassDegInput">
+                  Градусы на компасе телефона
+                  <div class="compass-apply-row">
+                    <input
+                      type="number"
+                      id="compassDegInput"
+                      class="square-input"
+                      min="0"
+                      max="359.9"
+                      step="1"
+                      placeholder="Например, 338"
+                    />
+                    <button type="button" class="btn-outline" id="applyCompassBtn">
+                      Применить
+                    </button>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- ВКЛАДКА: КОНТУР СТЕН -->
+          <section class="tab-pane" id="panelContour" role="tabpanel" aria-labelledby="tabBtnContour" hidden>
+            <div class="panel-block">
+              <div class="heading-with-value">
+                <h2 class="block-heading">Контур квартиры</h2>
+                <span class="vertex-count-badge" id="vertexCountBadge">6 углов</span>
+              </div>
+
+              <p class="block-lead">
+                Отмечайте внутренние углы квартиры касаниями по порядку — от 3 точек контур замкнётся сам, а центр рассчитается по настоящей форме квартиры.
+              </p>
+
+              <div class="contour-toolbar">
+                <button type="button" class="btn-outline" id="undoContourBtn" disabled>
+                  Отменить
+                </button>
+                <button type="button" class="btn-outline" id="deleteVertexBtn">
+                  Удалить угол
+                </button>
+                <button type="button" class="btn-outline danger-outline" id="clearContourBtn">
+                  Очистить
+                </button>
+              </div>
+
+              <label class="check-row compact-check">
+                <input type="checkbox" id="orthoSnapToggle" checked />
+                <span class="check-box" aria-hidden="true"></span>
+                <span class="check-text">
+                  <strong>Помогать держать прямой угол 90°</strong>
+                  <small>Удобно для ровных и Г-образных стен; для косых стен или эркера отключите</small>
+                </span>
+              </label>
+
+              <div class="warning-box" id="contourWarningBox" hidden></div>
+            </div>
+
+            <div class="panel-block subtle-card">
+              <h3 class="sub-heading">Что включать в контур</h3>
+              <ul class="method-list">
+                <li>Ведите линию по <strong>внутреннему периметру</strong> наружных стен квартиры.</li>
+                <li><strong>Лоджия или балкон</strong> входят в карту, только если они остеклены и вы проводите там от 2 часов в день. Открытые балконы не берём.</li>
+                <li>Чтобы добавить угол на готовой стене (например, под выступ), нажмите на маленький квадрат посередине стены и перетащите его.</li>
+                <li>Вентшахты на внешней границе квартиры обходим по стене комнаты.</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- ВКЛАДКА: СЛОИ КАРТЫ (ИТОГОВЫЙ ЭКРАН ПО БАЛУТЕ) -->
+          <section class="tab-pane is-active" id="panelLayers" role="tabpanel" aria-labelledby="tabBtnLayers">
+            <div class="panel-block">
+              <h2 class="block-heading">Слои по методу школы Балуты</h2>
+
+              <div class="layer-switches">
+                <label class="check-row layer-switch">
+                  <input type="checkbox" id="toggleSectors" checked />
+                  <span class="check-box" aria-hidden="true"></span>
+                  <span class="check-text">
+                    <strong>Сектора по сторонам света</strong>
+                    <small>8 радиальных зон по 45° от центра квартиры и палитра Анны</small>
+                  </span>
+                </label>
+
+                <label class="check-row layer-switch">
+                  <input type="checkbox" id="toggleBrahmastan" checked />
+                  <span class="check-box" aria-hidden="true"></span>
+                  <span class="check-text">
+                    <strong>Брахмастан по форме квартиры</strong>
+                    <small>Сердце дома · 1/9 площади (внутренняя треть лучей к углам)</small>
+                  </span>
+                </label>
+
+                <label class="check-row layer-switch">
+                  <input type="checkbox" id="togglePadas" />
+                  <span class="check-box" aria-hidden="true"></span>
+                  <span class="check-text">
+                    <strong>Сетка наложения пад</strong>
+                    <small>32 пады по 11,25° по периметру для входной двери и зеркал</small>
+                  </span>
+                </label>
+              </div>
+
+              <!-- Поднастройки сетки пад (показываются при включении сетки пад) -->
+              <div class="pada-suboptions" id="padaSuboptions" hidden>
+                <label class="check-row sub-check">
+                  <input type="checkbox" id="togglePadaBelts" checked />
+                  <span class="check-box" aria-hidden="true"></span>
+                  <span class="check-text">
+                    <span>Концентрические пояса по форме (1/9 · 3/9 · 5/9 · 7/9)</span>
+                  </span>
+                </label>
+                <label class="check-row sub-check">
+                  <input type="checkbox" id="togglePadaScores" />
+                  <span class="check-box" aria-hidden="true"></span>
+                  <span class="check-text">
+                    <span>Показать баллы пад по С. А. Балуте (−5…+5)</span>
+                    <small>Помните: слабая пада у входа — не приговор, а точка мягкой коррекции</small>
+                  </span>
+                </label>
+              </div>
+
+              <!-- Кнопка скачивания готовой карты для домашнего задания -->
+              <div class="export-cta-wrap">
+                <button type="button" class="btn-primary-dark btn-full" id="exportPngBtn">
+                  Сохранить карту в PNG для домашнего задания
+                </button>
+              </div>
+            </div>
+
+            <!-- Вид и прозрачность -->
+            <div class="panel-block compact-block">
+              <label class="check-row compact-check">
+                <input type="checkbox" id="toggleAlignNorthUp" />
+                <span class="check-box" aria-hidden="true"></span>
+                <span class="check-text">
+                  <strong>Повернуть чертёж: Север строго сверху</strong>
+                  <small>Удобно для чтения карты в классической ориентации</small>
+                </span>
+              </label>
+
+              <div class="opacity-row">
+                <label for="sectorOpacitySlider">Прозрачность цвета зон</label>
+                <span id="sectorOpacityValue">55%</span>
+              </div>
+              <input
+                type="range"
+                id="sectorOpacitySlider"
+                min="20"
+                max="80"
+                step="5"
+                value="55"
+              />
+            </div>
+
+            <!-- Сводка по центру и балансу 8 секторов -->
+            <div class="panel-block">
+              <h3 class="sub-heading">Центр и баланс 8 зон</h3>
+              <p class="small-copy" id="centerSummaryText">
+                Центр квартиры (Брахмабинду) найден по её настоящей форме и отмечен на плане.
+              </p>
+
+              <div class="zones-list" id="zonesBalanceList" aria-label="Доли секторов квартиры"></div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>

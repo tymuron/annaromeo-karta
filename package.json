@@ -1,0 +1,21 @@
+{
+  "name": "annaromeo-karta-novaya",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Конструктор Васту-карты Анны Ромео по методу школы Балуты",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.js",
+    "start": "node scripts/serve.mjs",
+    "screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "dependencies": {
+    "@fontsource/cormorant": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
+    "pdfjs-dist": "^6.5.438"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

@@ -1,0 +1,847 @@
+/*
+ * Фирменный стиль конструктора Васту-карты Анны Ромео ("Anna's look"):
+ * - Бордовый фон (#422326 / #31181B), золото (#CABC90) — ТОЛЬКО текст и тонкие линии 1px на бордовом.
+ * - Тёплый кремовый (#F4F2ED) на рабочей панели, античное тёмное золото (#76643A) на кремовом.
+ * - Золото (#CABC90) никогда не граничит напрямую с кремовым (#F4F2ED) и никогда не служит заливкой кнопок.
+ * - Строгая архитектурная геометрия: прямые углы (border-radius: 0).
+ */
+
+:root {
+  --burgundy: #422326;
+  --burgundy-deep: #31181b;
+  --burgundy-edge: #241013;
+  --gold: #cabc90;
+  --gold-hairline: rgba(202, 188, 144, 0.30);
+  --gold-hairline-strong: rgba(202, 188, 144, 0.58);
+  --cream: #f4f2ed;
+  --paper: #faf8f4;
+  --ink: #2b1618;
+  --ink-muted: #655255;
+  --gold-dark: #76643a;
+  --cream-border: rgba(66, 35, 38, 0.16);
+  --cream-border-strong: rgba(66, 35, 38, 0.34);
+  --danger: #9e2a2b;
+
+  --font-serif: 'Cormorant', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--burgundy-deep);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Главный каркас */
+.studio-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100dvh;
+  background: var(--burgundy-deep);
+}
+
+/* Шапка на бордовом фоне */
+.topbar {
+  flex: 0 0 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  background: var(--burgundy);
+  border-bottom: 1px solid var(--gold-hairline);
+  z-index: 10;
+}
+
+.brand-lockup {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  min-width: 0;
+}
+
+.brand-author {
+  color: var(--gold);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.brand-divider {
+  display: none;
+}
+
+.brand-title {
+  margin: 0;
+  color: var(--gold);
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  font-style: italic;
+  line-height: 1.05;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.desktop-label {
+  display: none;
+}
+
+.mobile-label {
+  display: inline;
+}
+
+.topbar-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Кнопки на бордовом фоне (золото только текст и 1px линия) */
+.btn-burgundy-ghost,
+.btn-burgundy-gold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--gold);
+  border: 1px solid var(--gold-hairline);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.btn-burgundy-gold {
+  background: var(--burgundy-deep);
+  border-color: var(--gold-hairline-strong);
+  font-weight: 600;
+}
+
+.btn-burgundy-ghost:hover,
+.btn-burgundy-gold:hover {
+  background: rgba(202, 188, 144, 0.08);
+  border-color: var(--gold);
+}
+
+/* Рабочая область (Mobile-first: вертикальный сплит, Desktop: 2 колонки) */
+.workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-stage {
+  position: relative;
+  flex: 0 0 45dvh;
+  min-height: 290px;
+  background: var(--burgundy-deep);
+  border-bottom: 1px solid var(--burgundy-edge);
+  overflow: hidden;
+  user-select: none;
+}
+
+.studio-shell.canvas-expanded .canvas-stage {
+  flex: 0 0 66dvh;
+}
+
+#mapCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+#mapCanvas:active {
+  cursor: grabbing;
+}
+
+/* Элементы поверх холста */
+.canvas-hud-top {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.status-banner {
+  pointer-events: auto;
+  max-width: calc(100% - 88px);
+  padding: 6px 11px;
+  background: rgba(49, 24, 27, 0.88);
+  border: 1px solid var(--gold-hairline);
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.hud-btn,
+.hud-icon-btn {
+  pointer-events: auto;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
+  background: rgba(66, 35, 38, 0.92);
+  color: var(--gold);
+  border: 1px solid var(--gold-hairline);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hud-icon-btn {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.hud-text-btn {
+  font-size: 12px;
+  padding: 0 12px;
+}
+
+.hud-btn:hover,
+.hud-icon-btn:hover {
+  border-color: var(--gold);
+  background: var(--burgundy);
+}
+
+.canvas-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+/* Инструментальная панель на кремовом фоне */
+.inspector-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cream);
+  color: var(--ink);
+}
+
+/* Вкладки режимов (без нумерации шагов) */
+.mode-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: var(--paper);
+  border-bottom: 1px solid var(--cream-border-strong);
+}
+
+.mode-tab {
+  min-height: 46px;
+  padding: 8px 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  border: none;
+  border-right: 1px solid var(--cream-border);
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.mode-tab:last-child {
+  border-right: none;
+}
+
+.mode-tab:hover {
+  color: var(--burgundy);
+  background: rgba(66, 35, 38, 0.03);
+}
+
+.mode-tab.is-active {
+  background: var(--burgundy);
+  color: var(--gold);
+  border-bottom-color: var(--burgundy);
+}
+
+.inspector-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 16px 28px;
+}
+
+.tab-pane[hidden] {
+  display: none !important;
+}
+
+.panel-block {
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--cream-border);
+}
+
+.panel-block:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.compact-block {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+}
+
+.subtle-card {
+  background: var(--paper);
+  border: 1px solid var(--cream-border);
+  padding: 12px 14px;
+}
+
+.block-heading {
+  margin: 0 0 6px;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--burgundy);
+}
+
+.sub-heading {
+  margin: 0 0 6px;
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--burgundy);
+}
+
+.block-lead {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--ink-muted);
+}
+
+.small-copy {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.privacy-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--gold-dark);
+}
+
+.heading-with-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.heading-with-value .block-heading {
+  margin-bottom: 0;
+}
+
+.north-readout,
+.vertex-count-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  background: var(--paper);
+  border: 1px solid var(--cream-border-strong);
+  color: var(--burgundy);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Кнопки на кремовой панели */
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btn-primary-dark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 8px 14px;
+  background: var(--burgundy);
+  color: var(--gold);
+  border: 1px solid var(--burgundy);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.btn-primary-dark:hover {
+  background: var(--burgundy-deep);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: var(--paper);
+  color: var(--burgundy);
+  border: 1px solid var(--cream-border-strong);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.btn-outline:hover:not(:disabled) {
+  border-color: var(--burgundy);
+  background: #ece8df;
+}
+
+.btn-outline:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.danger-outline {
+  color: var(--danger);
+}
+
+.file-trigger {
+  cursor: pointer;
+}
+
+.secondary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.current-file-label {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-action {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  color: var(--gold-dark);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Управление Севером */
+.north-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+input[type='range'] {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(66, 35, 38, 0.22);
+  outline: none;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--burgundy);
+  border: 1px solid var(--gold);
+  cursor: pointer;
+}
+
+.degree-box {
+  display: flex;
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--cream-border-strong);
+  padding-right: 8px;
+}
+
+.degree-box input {
+  width: 64px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  padding: 0 6px 0 10px;
+  font-weight: 600;
+  color: var(--burgundy);
+  outline: none;
+}
+
+.quick-angles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.chip-btn {
+  min-height: 36px;
+  padding: 4px 6px;
+  background: var(--paper);
+  border: 1px solid var(--cream-border);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chip-btn:hover {
+  border-color: var(--burgundy);
+  color: var(--burgundy);
+}
+
+/* Калькулятор компаса */
+.compass-calc-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--burgundy);
+}
+
+.square-select,
+.square-input {
+  height: 42px;
+  padding: 0 10px;
+  background: #ffffff;
+  border: 1px solid var(--cream-border-strong);
+  color: var(--ink);
+  outline: none;
+}
+
+.compass-apply-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+/* Инструменты контура */
+.contour-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.method-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.method-list li {
+  margin-bottom: 6px;
+}
+
+.method-list li:last-child {
+  margin-bottom: 0;
+}
+
+.warning-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f9ebeb;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+/* Квадратные переключатели слоёв по методу Балуты */
+.layer-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.layer-switch {
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--cream-border);
+  transition: border-color 0.15s ease;
+}
+
+.layer-switch:hover {
+  border-color: var(--burgundy);
+}
+
+.compact-check {
+  padding: 4px 0 8px;
+}
+
+.check-row input[type='checkbox'] {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.check-box {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  background: #ffffff;
+  border: 1.5px solid var(--burgundy);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.check-row input[type='checkbox']:checked + .check-box {
+  background: var(--burgundy);
+}
+
+.check-row input[type='checkbox']:checked + .check-box::after {
+  content: '';
+  width: 10px;
+  height: 5px;
+  border-left: 2px solid var(--gold);
+  border-bottom: 2px solid var(--gold);
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+
+.check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.check-text strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--burgundy);
+}
+
+.check-text small {
+  font-size: 12px;
+  color: var(--ink-muted);
+  line-height: 1.35;
+}
+
+.pada-suboptions {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--cream-border);
+  border-left: 3px solid var(--gold-dark);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-check .check-text span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.export-cta-wrap {
+  margin-top: 12px;
+}
+
+.opacity-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--burgundy);
+  margin: 6px 0 6px;
+}
+
+/* Таблица баланса 8 секторов (палитра Анны Ромео) */
+.zones-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zone-card {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--paper);
+  border: 1px solid var(--cream-border);
+}
+
+.zone-swatch {
+  width: 14px;
+  height: 28px;
+  border: 1px solid rgba(66, 35, 38, 0.30);
+}
+
+.zone-meta {
+  min-width: 0;
+}
+
+.zone-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--burgundy);
+}
+
+.zone-formula {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zone-share {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold-dark);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Адаптация под настольный экран (>= 960px) */
+@media (min-width: 960px) {
+  .topbar {
+    flex: 0 0 60px;
+    padding: 0 24px;
+  }
+
+  .brand-lockup {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .brand-author {
+    font-size: 11px;
+  }
+
+  .brand-divider {
+    display: inline;
+    color: var(--gold);
+    opacity: 0.55;
+  }
+
+  .brand-title {
+    font-size: 27px;
+  }
+
+  .desktop-label {
+    display: inline;
+  }
+
+  .mobile-label {
+    display: none;
+  }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 428px;
+    height: calc(100dvh - 60px);
+  }
+
+  .canvas-stage {
+    height: 100%;
+    flex: none;
+    border-bottom: none;
+    border-right: 1px solid var(--burgundy-edge);
+  }
+
+  .inspector-panel {
+    height: 100%;
+  }
+
+  .inspector-scroll {
+    padding: 18px 22px 32px;
+  }
+
+  .mobile-only {
+    display: none !important;
+  }
+}
