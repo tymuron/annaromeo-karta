@@ -1,11 +1,12 @@
 /**
  * Главный модуль клиентского приложения «Васту-карта · Анна Ромео».
- * Работает локально в браузере на телефоне и компьютере.
+ * Четыре последовательных шага:
+ *   1. План -> 2. Север (только по спутнику) -> 3. Контур стен -> 4. Карта.
+ * Работает локально в браузере на телефоне и компьютере без внешних запросов.
  */
 
 import {
   normalizeDeg,
-  vectorToAzimuthDeg,
   signedAngleDeltaDeg,
   northAngleFromWallSegments,
   houseTiltFromSatelliteWall,
@@ -27,22 +28,21 @@ import {
   MIN_NEW_CORNER_DIST_PX,
   VERTEX_DRAG_START_PX,
   clonePointList,
+  computeStepsState,
+  normalizeRestoredDraft,
   applySheetRotation90CW,
   createUndoHistory,
   applyUndoEntry,
   computePlanViewRotationDeg,
   resolvePlanTabHitAction,
   isWallSegmentLongEnoughOnScreen,
-  shouldCommitNorthHandleTurn,
   classifyContourTapProximity,
   applyOrthoSnapPoint,
   formatHouseTiltLine,
   detectExportPlatform,
   buildExportFilename,
-  validateNorthDegreeInput,
   canExportVastuMap,
   createDefaultLayers,
-  restoreSavedLayers,
 } from './state-helpers.js';
 import {
   downscalePlanToDataUrl,
@@ -52,7 +52,7 @@ import {
 } from './storage.js';
 
 const state = {
-  isSamplePlan: true,
+  isSamplePlan: false,
   sampleModified: false,
   basePlanCanvas: null,
   sheetQuarterTurns: 0,
@@ -70,11 +70,14 @@ const state = {
   orthoSnap: true,
   contourTransientHint: '',
 
-  northSet: true,
-  northAngleDeg: 22,
+  northSet: false,
+  northSource: null, // 'satellite' | null
+  northAngleDeg: null,
+  legacyManualNorthNotice: false,
   alignNorthUp: true,
   frozenRotationDeg: null,
-  activeTab: 'layers',
+  activeTab: 'plan',
+  mapExported: false,
 
   layers: createDefaultLayers(),
 
@@ -108,8 +111,10 @@ const mapCanvas = document.getElementById('mapCanvas');
 const ctx = mapCanvas.getContext('2d');
 const inspectorScroll = document.getElementById('inspectorScroll');
 
+const canvasHudTop = document.getElementById('canvasHudTop');
 const statusBanner = document.getElementById('canvasStatusBanner');
 const toggleCanvasSizeBtn = document.getElementById('toggleCanvasSizeBtn');
+const canvasZoomControls = document.getElementById('canvasZoomControls');
 const zoomInBtn = document.getElementById('zoomInBtn');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
 const zoomFitBtn = document.getElementById('zoomFitBtn');
@@ -118,29 +123,41 @@ const saveToast = document.getElementById('saveToast');
 const saveToastText = document.getElementById('saveToastText');
 const openSavedPreviewBtn = document.getElementById('openSavedPreviewBtn');
 
+const mobilePickingBar = document.getElementById('mobilePickingBar');
+const pickingBarHint = document.getElementById('pickingBarHint');
+const pickingUndoBtn = document.getElementById('pickingUndoBtn');
+const pickingDoneBtn = document.getElementById('pickingDoneBtn');
+
 const planFileInput = document.getElementById('planFileInput');
+const planEmptyState = document.getElementById('planEmptyState');
+const planLoadedState = document.getElementById('planLoadedState');
+const planNextStepBtn = document.getElementById('planNextStepBtn');
 const rotatePlan90Btn = document.getElementById('rotatePlan90Btn');
 const rotateSheetHint = document.getElementById('rotateSheetHint');
-const loadSampleBtn = document.getElementById('loadSampleBtn');
 const currentPlanTitle = document.getElementById('currentPlanTitle');
 const planErrorBox = document.getElementById('planErrorBox');
 
 const satFileInput = document.getElementById('satFileInput');
-const satStepperBox = document.getElementById('satStepperBox');
-const satStepSatBtn = document.getElementById('satStepSatBtn');
-const satStepPlanBtn = document.getElementById('satStepPlanBtn');
-const satStepDoneBtn = document.getElementById('satStepDoneBtn');
+const legacyNorthNoticeBox = document.getElementById('legacyNorthNoticeBox');
+const northSubUpload = document.getElementById('northSubUpload');
+const northSubPicking = document.getElementById('northSubPicking');
+const northSubVerify = document.getElementById('northSubVerify');
+const satStageSatPill = document.getElementById('satStageSatPill');
+const satStagePlanPill = document.getElementById('satStagePlanPill');
+const satStageVerifyPill = document.getElementById('satStageVerifyPill');
+const northPickingHeading = document.getElementById('northPickingHeading');
 const satStepHintText = document.getElementById('satStepHintText');
-const satResetPointsBtn = document.getElementById('satResetPointsBtn');
+const satDesktopUndoBtn = document.getElementById('satDesktopUndoBtn');
+const satDesktopDoneBtn = document.getElementById('satDesktopDoneBtn');
+const northReadoutBadge = document.getElementById('northReadoutBadge');
 const satHouseTiltLine = document.getElementById('satHouseTiltLine');
 const satVerifyBox = document.getElementById('satVerifyBox');
-
-const northReadoutBadge = document.getElementById('northReadoutBadge');
-const northSlider = document.getElementById('northSlider');
-const northNumberInput = document.getElementById('northNumberInput');
+const northNextContourBtn = document.getElementById('northNextContourBtn');
+const satResetPointsBtn = document.getElementById('satResetPointsBtn');
 
 const vertexCountBadge = document.getElementById('vertexCountBadge');
 const undoContourBtn = document.getElementById('undoContourBtn');
+const contourDoneBtn = document.getElementById('contourDoneBtn');
 const deleteVertexBtn = document.getElementById('deleteVertexBtn');
 const clearContourBtn = document.getElementById('clearContourBtn');
 const orthoSnapToggle = document.getElementById('orthoSnapToggle');
@@ -183,14 +200,19 @@ const imagePreviewModal = document.getElementById('imagePreviewModal');
 const previewModalImg = document.getElementById('previewModalImg');
 const closePreviewModalBtn = document.getElementById('closePreviewModalBtn');
 
-const tabButtons = Array.from(document.querySelectorAll('.mode-tab'));
+const tabButtons = {
+  plan: document.getElementById('tabBtnPlan'),
+  north: document.getElementById('tabBtnNorth'),
+  contour: document.getElementById('tabBtnContour'),
+  layers: document.getElementById('tabBtnLayers'),
+};
 const tabPanes = {
   plan: document.getElementById('panelPlan'),
+  north: document.getElementById('panelNorth'),
   contour: document.getElementById('panelContour'),
   layers: document.getElementById('panelLayers'),
 };
 
-let lastValidNorthInput = '22';
 let lastExportDataUrl = null;
 let saveToastTimer = null;
 let persistTimer = null;
@@ -249,9 +271,17 @@ imagePreviewModal.addEventListener('click', (e) => {
 // Автосохранение сессии в IndexedDB / localStorage
 // ============================================================================
 function buildSessionRecord() {
+  if (!state.planCanvas) return null;
+
   if (!state.isSamplePlan && !cachedBasePlanDataUrl && state.basePlanCanvas) {
     cachedBasePlanDataUrl = downscalePlanToDataUrl(state.basePlanCanvas, 1400);
   }
+
+  const isSatelliteNorth = Boolean(
+    state.northSet &&
+      state.northSource === 'satellite' &&
+      Number.isFinite(state.northAngleDeg)
+  );
 
   return {
     version: 2,
@@ -264,11 +294,11 @@ function buildSessionRecord() {
     basePlanHeight: state.basePlanCanvas ? state.basePlanCanvas.height : state.planHeight,
     basePlanDataUrl: state.isSamplePlan ? null : cachedBasePlanDataUrl,
     vertices: clonePointList(state.vertices),
-    northSet: state.northSet,
-    northAngleDeg:
-      state.northSet && Number.isFinite(state.northAngleDeg)
-        ? normalizeDeg(state.northAngleDeg)
-        : null,
+    satPlanPts: isSatelliteNorth ? clonePointList(state.sat.planPts) : [],
+    satHouseTiltDeg: isSatelliteNorth ? state.sat.houseTiltDeg : null,
+    northSet: isSatelliteNorth,
+    northSource: isSatelliteNorth ? 'satellite' : null,
+    northAngleDeg: isSatelliteNorth ? normalizeDeg(state.northAngleDeg) : null,
     alignNorthUp: state.alignNorthUp,
     orthoSnap: state.orthoSnap,
     activeTab: state.activeTab,
@@ -281,13 +311,17 @@ function schedulePersist(immediate = false) {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+  if (!state.planCanvas) return;
+
   if (immediate) {
-    saveWorkspaceSession(buildSessionRecord()).catch(() => {});
+    const rec = buildSessionRecord();
+    if (rec) saveWorkspaceSession(rec).catch(() => {});
     return;
   }
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    saveWorkspaceSession(buildSessionRecord()).catch(() => {});
+    const rec = buildSessionRecord();
+    if (rec) saveWorkspaceSession(rec).catch(() => {});
   }, 220);
 }
 
@@ -311,6 +345,7 @@ function pushSheetRotateUndoSnapshot() {
     vertices: state.vertices,
     satPlanPts: state.sat.planPts,
     northSet: state.northSet,
+    northSource: state.northSource,
     northAngleDeg: state.northAngleDeg,
   });
   if (state.isSamplePlan) {
@@ -331,6 +366,7 @@ function performUndo() {
       satPlanPts: state.sat.planPts,
       satSatPts: state.sat.satPts,
       northSet: state.northSet,
+      northSource: state.northSource,
       northAngleDeg: state.northAngleDeg,
     },
     entry
@@ -368,11 +404,8 @@ function performUndo() {
   state.vertices = next.vertices;
   state.sat.planPts = next.satPlanPts;
   state.northSet = next.northSet;
+  state.northSource = next.northSource;
   state.northAngleDeg = next.northAngleDeg;
-  lastValidNorthInput =
-    state.northSet && Number.isFinite(state.northAngleDeg)
-      ? String(Math.round(state.northAngleDeg * 10) / 10)
-      : '';
 
   state.selectedVertexIndex = Math.min(
     state.selectedVertexIndex,
@@ -386,6 +419,24 @@ function performUndo() {
   schedulePersist();
 }
 
+function handleContourUndoOrPop() {
+  if (state.undoHistory.length > 0) {
+    performUndo();
+    return;
+  }
+  if (state.vertices.length > 0) {
+    state.contourTransientHint = '';
+    pushContourUndoSnapshot();
+    state.vertices.pop();
+    state.selectedVertexIndex = Math.min(
+      state.selectedVertexIndex,
+      state.vertices.length - 1
+    );
+    recomputeVastuMap();
+    schedulePersist();
+  }
+}
+
 function pluralizeCorners(count) {
   const mod10 = count % 10;
   const mod100 = count % 100;
@@ -396,7 +447,7 @@ function pluralizeCorners(count) {
 
 function isViewingSatelliteCanvas() {
   return (
-    state.activeTab === 'plan' &&
+    state.activeTab === 'north' &&
     state.satViewMode === 'sat' &&
     Boolean(state.sat && state.sat.canvas)
   );
@@ -443,9 +494,11 @@ function unfreezeScreenRotationIfIdle({ fitIfRotationChanged = false } = {}) {
 }
 
 function recomputeVastuMap() {
-  if (state.vertices.length >= 3) {
+  if (state.planCanvas && state.vertices.length >= 3) {
     const northArg =
-      state.northSet && Number.isFinite(state.northAngleDeg)
+      state.northSet &&
+      state.northSource === 'satellite' &&
+      Number.isFinite(state.northAngleDeg)
         ? state.northAngleDeg
         : null;
     state.vastuMap = buildVastuMap(state.vertices, northArg);
@@ -460,7 +513,10 @@ function recomputeVastuMap() {
 // Масштабирование и вписывание чертежа / снимка спутника
 // ============================================================================
 function fitPlanToViewport() {
-  if (!state.planCanvas) return;
+  if (!state.planCanvas) {
+    requestRender();
+    return;
+  }
   const rect = canvasStage.getBoundingClientRect();
   const vw = Math.max(100, rect.width);
   const vh = Math.max(100, rect.height);
@@ -475,9 +531,12 @@ function fitPlanToViewport() {
   const effW = state.planWidth * absCos + state.planHeight * absSin;
   const effH = state.planWidth * absSin + state.planHeight * absCos;
 
-  const sidePad = vw < 520 ? 28 : 56;
-  const topHudSpace = vw < 520 ? 76 : 66;
-  const bottomHudSpace = vw < 520 ? 64 : 60;
+  const isCompactPicking =
+    vw < 560 && studioShell.classList.contains('is-point-picking');
+
+  const sidePad = isCompactPicking ? 10 : vw < 520 ? 22 : 52;
+  const topHudSpace = isCompactPicking ? 42 : vw < 520 ? 58 : 62;
+  const bottomHudSpace = isCompactPicking ? 52 : vw < 520 ? 58 : 58;
   const availW = Math.max(60, vw - sidePad * 2);
   const availH = Math.max(60, vh - topHudSpace - bottomHudSpace);
 
@@ -500,9 +559,9 @@ function fitSatelliteToViewport({ mode = 'large' } = {}) {
   const vw = Math.max(100, rect.width);
   const vh = Math.max(100, rect.height);
 
-  const sidePad = vw < 520 ? 14 : 36;
-  const topSpace = vw < 520 ? 64 : 54;
-  const bottomSpace = 52;
+  const sidePad = vw < 520 ? 12 : 36;
+  const topSpace = vw < 520 ? 52 : 54;
+  const bottomSpace = 50;
   const availW = Math.max(60, vw - sidePad * 2);
   const availH = Math.max(60, vh - topSpace - bottomSpace);
 
@@ -528,8 +587,8 @@ function fitSatelliteToViewport({ mode = 'large' } = {}) {
   state.satZoom = Math.min(
     4,
     isPortraitScreenshot
-      ? Math.max(fillWidthZoom, containZoom * 3.2)
-      : coverZoom * (vw < 560 ? 1.22 : 1.06)
+      ? Math.max(containZoom, fillWidthZoom)
+      : coverZoom * (vw < 560 ? 1.12 : 1.04)
   );
   state.satPanX = 0;
   state.satPanY = 0;
@@ -581,6 +640,7 @@ function syncPadaZoomHintUI() {
   if (!padaZoomHint) return;
   const hasReadyMap = Boolean(
     state.northSet &&
+      state.northSource === 'satellite' &&
       state.vertices.length >= 3 &&
       state.vastuMap &&
       !state.vastuMap.selfIntersects
@@ -626,47 +686,62 @@ function drawNow() {
 }
 
 // ============================================================================
-// Переключение вкладок и синхронизация интерфейса
+// Переключение шагов (вкладок) и расчёт Севера строго по спутнику
 // ============================================================================
 function setActiveTab(tabName) {
   if (!tabPanes[tabName]) return;
+  if (!state.planCanvas && tabName !== 'plan') {
+    state.activeTab = 'plan';
+    syncInspectorUI();
+    requestRender();
+    return;
+  }
+
+  const prevPicking = studioShell.classList.contains('is-point-picking');
   state.activeTab = tabName;
   state.contourTransientHint = '';
 
-  for (const btn of tabButtons) {
-    const active = btn.dataset.tab === tabName;
-    btn.classList.toggle('is-active', active);
-    btn.setAttribute('aria-selected', active ? 'true' : 'false');
-  }
-  for (const [key, pane] of Object.entries(tabPanes)) {
-    const active = key === tabName;
-    pane.hidden = !active;
-    pane.classList.toggle('is-active', active);
+  if (tabName === 'north') {
+    if (state.northSet && state.northSource === 'satellite') {
+      if (state.satViewMode === 'idle') {
+        state.satViewMode = 'done';
+      }
+    } else if (state.sat.canvas && state.satViewMode === 'idle') {
+      state.satViewMode = state.sat.satPts.length === 2 ? 'plan-pick' : 'sat';
+    }
   }
 
-  // При смене вкладки панель прокручивается в самое начало
+  // На шагах 1–3 сбрасываем ручное раскрытие холста «Крупнее» с шага 4
+  if (tabName !== 'layers') {
+    studioShell.classList.remove('canvas-expanded');
+    if (toggleCanvasSizeBtn) toggleCanvasSizeBtn.textContent = 'Крупнее';
+  }
+
   if (inspectorScroll) {
     inspectorScroll.scrollTop = 0;
   }
 
   syncInspectorUI();
-  requestRender();
+  const nextPicking = studioShell.classList.contains('is-point-picking');
+
+  if (isViewingSatelliteCanvas()) {
+    fitSatelliteToViewport({ mode: 'large' });
+  } else if (prevPicking !== nextPicking || state.planCanvas) {
+    fitPlanToViewport();
+  } else {
+    requestRender();
+  }
   schedulePersist();
 }
 
-function setNorthAngle(deg, options = {}) {
-  const { keepFrozenRotation = false, fitAfter = false, clearSatTilt = false } = options;
+function applySatelliteNorthAngle(deg, { keepFrozenRotation = false, fitAfter = false } = {}) {
   state.northSet = true;
+  state.northSource = 'satellite';
   state.northAngleDeg = normalizeDeg(deg);
-  if (clearSatTilt) {
-    state.sat.houseTiltDeg = null;
-  }
+  state.legacyManualNorthNotice = false;
   if (state.isSamplePlan) {
     state.sampleModified = true;
   }
-
-  const roundedDisp = Math.round(state.northAngleDeg * 10) / 10;
-  lastValidNorthInput = String(roundedDisp);
 
   if (!keepFrozenRotation) {
     state.frozenRotationDeg = null;
@@ -679,21 +754,7 @@ function setNorthAngle(deg, options = {}) {
   schedulePersist();
 }
 
-function scrollVerifyNoteIntoView() {
-  if (!inspectorScroll || !satVerifyBox || satVerifyBox.hidden) return;
-  const scrollRect = inspectorScroll.getBoundingClientRect();
-  const boxRect = satVerifyBox.getBoundingClientRect();
-  if (boxRect.bottom > scrollRect.bottom - 10) {
-    inspectorScroll.scrollTop += boxRect.bottom - scrollRect.bottom + 14;
-  } else if (boxRect.top < scrollRect.top + 8) {
-    inspectorScroll.scrollTop = Math.max(
-      0,
-      inspectorScroll.scrollTop + (boxRect.top - scrollRect.top) - 10
-    );
-  }
-}
-
-function tryComputeNorthFromSatellite({ scrollToVerify = true } = {}) {
+function tryComputeNorthFromSatellite() {
   if (state.sat.satPts.length < 2 || state.sat.planPts.length < 2) {
     return false;
   }
@@ -712,79 +773,192 @@ function tryComputeNorthFromSatellite({ scrollToVerify = true } = {}) {
   );
   state.satShortWallWarning = '';
   state.satViewMode = 'done';
-  setNorthAngle(computed, { fitAfter: true });
+  applySatelliteNorthAngle(computed, { fitAfter: true });
 
-  if (scrollToVerify) {
-    scrollVerifyNoteIntoView();
-    requestAnimationFrame(() => scrollVerifyNoteIntoView());
+  if (inspectorScroll) {
+    inspectorScroll.scrollTop = 0;
   }
   return true;
 }
 
-function syncSatelliteUI() {
-  const hasSat = Boolean(state.sat.canvas);
-  satStepperBox.hidden = !hasSat;
+function syncNorthStepUI(stepsInfo) {
+  legacyNorthNoticeBox.hidden = !(
+    state.legacyManualNorthNotice && !stepsInfo.hasNorth
+  );
 
-  if (!hasSat) {
-    satHouseTiltLine.hidden = true;
-    satVerifyBox.hidden = true;
+  const hasSat = Boolean(state.sat.canvas);
+  const inPicking =
+    hasSat && (state.satViewMode === 'sat' || state.satViewMode === 'plan-pick');
+  const inVerify =
+    stepsInfo.hasNorth &&
+    (state.satViewMode === 'done' || (!inPicking && state.satViewMode === 'idle'));
+
+  northSubUpload.hidden = inPicking || inVerify;
+  northSubPicking.hidden = !inPicking;
+  northSubVerify.hidden = !inVerify;
+
+  if (inPicking) {
+    const satCount = state.sat.satPts.length;
+    const planCount = state.sat.planPts.length;
+
+    satStageSatPill.classList.toggle('is-active', state.satViewMode === 'sat');
+    satStageSatPill.classList.toggle('is-done', satCount === 2 && state.satViewMode !== 'sat');
+    satStagePlanPill.classList.toggle('is-active', state.satViewMode === 'plan-pick');
+    satStagePlanPill.classList.toggle('is-done', planCount === 2 && state.satViewMode === 'done');
+    satStageVerifyPill.classList.remove('is-active');
+
+    if (state.satViewMode === 'sat') {
+      northPickingHeading.textContent = 'Отметьте точки 1 и 2 на снимке';
+      satDesktopDoneBtn.disabled = satCount < 2;
+      if (state.satShortWallWarning) {
+        satStepHintText.textContent = state.satShortWallWarning;
+        satStepHintText.classList.add('is-warning');
+      } else {
+        satStepHintText.classList.remove('is-warning');
+        if (satCount === 0) {
+          satStepHintText.textContent =
+            'Разведите двумя пальцами, чтобы увеличить дом, и коснитесь первого угла наружной стены (точка «1»).';
+        } else if (satCount === 1) {
+          satStepHintText.textContent =
+            'Точка «1» стоит — коснитесь второго угла этой же стены (точка «2»). Разведите двумя пальцами, чтобы увеличить дом.';
+        } else {
+          satStepHintText.textContent =
+            'Точки «1» и «2» на снимке отмечены. При необходимости подправьте их перетаскиванием и нажмите «Готово».';
+        }
+      }
+    } else {
+      northPickingHeading.textContent = 'Отметьте те же точки 1 и 2 на плане';
+      satDesktopDoneBtn.disabled = planCount < 2;
+      if (state.satShortWallWarning) {
+        satStepHintText.textContent = state.satShortWallWarning;
+        satStepHintText.classList.add('is-warning');
+      } else {
+        satStepHintText.classList.remove('is-warning');
+        if (planCount === 0) {
+          satStepHintText.textContent =
+            'Приблизьте план двумя пальцами или кнопкой «+» и коснитесь того же первого угла стены (точка «1»).';
+        } else if (planCount === 1) {
+          satStepHintText.textContent =
+            'Точка «1» стоит — коснитесь второго угла этой же стены в том же порядке (точка «2»).';
+        } else {
+          satStepHintText.textContent =
+            'Обе точки «1» и «2» на плане отмечены. Нажмите «Готово», чтобы рассчитать и проверить Север.';
+        }
+      }
+    }
     return;
   }
 
-  const satCount = state.sat.satPts.length;
-  const planCount = state.sat.planPts.length;
-  const bothReady = satCount === 2 && planCount === 2 && state.northSet;
+  if (inVerify) {
+    const roundedNorth = Math.round(state.northAngleDeg * 10) / 10;
+    northReadoutBadge.textContent = `${String(roundedNorth).replace('.', ',')}°`;
+    northReadoutBadge.classList.remove('is-unset');
 
-  satStepSatBtn.classList.toggle('is-active', state.satViewMode === 'sat');
-  satStepPlanBtn.classList.toggle('is-active', state.satViewMode === 'plan-pick');
-  satStepDoneBtn.disabled = !bothReady;
-  satStepDoneBtn.classList.toggle('is-active', state.satViewMode === 'done');
-
-  if (state.satShortWallWarning) {
-    satStepHintText.textContent = state.satShortWallWarning;
-    satStepHintText.classList.add('is-warning');
-  } else {
-    satStepHintText.classList.remove('is-warning');
-    if (state.satViewMode === 'sat') {
-      if (satCount === 0) {
-        satStepHintText.textContent =
-          'Разведите двумя пальцами, чтобы увеличить дом, и коснитесь первого угла наружной стены (точка «1»).';
-      } else if (satCount === 1) {
-        satStepHintText.textContent =
-          'Точка «1» стоит — коснитесь второго угла этой же стены (точка «2»). Разведите двумя пальцами, чтобы увеличить дом.';
-      } else {
-        satStepHintText.textContent =
-          'Стена 1 → 2 на снимке отмечена. Нажмите «2. На плане» или перетащите точки для уточнения.';
-      }
-    } else if (state.satViewMode === 'plan-pick') {
-      if (planCount === 0) {
-        satStepHintText.textContent =
-          'Шаг 2 из 2: при необходимости приблизьте план двумя пальцами и коснитесь того же первого угла стены (точка «1»).';
-      } else if (planCount === 1) {
-        satStepHintText.textContent =
-          'Точка «1» отмечена — коснитесь второго угла этой же стены в том же порядке (точка «2»).';
-      } else {
-        satStepHintText.textContent =
-          'Обе точки на плане стоят — здесь (на неповёрнутом листе) точки «1» и «2» можно подвинуть пальцем.';
-      }
+    if (Number.isFinite(state.sat.houseTiltDeg)) {
+      satHouseTiltLine.textContent = formatHouseTiltLine(state.sat.houseTiltDeg);
+      satHouseTiltLine.hidden = false;
     } else {
-      satStepHintText.textContent =
-        'Точки «1» и «2» показаны только для сверки. Чтобы поправить точку стены, перейдите в «2. На плане».';
+      satHouseTiltLine.hidden = true;
+    }
+
+    satVerifyBox.hidden = false;
+    northNextContourBtn.textContent = stepsInfo.hasValidContour
+      ? 'Далее: 4. Карта →'
+      : 'Далее: 3. Контур стен →';
+  }
+}
+
+function syncMobilePickingBar(stepsInfo) {
+  if (!stepsInfo.isPointPicking) {
+    mobilePickingBar.hidden = true;
+    return;
+  }
+
+  mobilePickingBar.hidden = false;
+
+  if (state.activeTab === 'north' && state.satViewMode === 'sat') {
+    const n = state.sat.satPts.length;
+    pickingUndoBtn.disabled = false;
+    pickingDoneBtn.disabled = n < 2;
+
+    if (state.satShortWallWarning) {
+      pickingBarHint.textContent = 'Стена короткая — увеличьте снимок';
+      pickingBarHint.classList.add('is-warning');
+    } else {
+      pickingBarHint.classList.remove('is-warning');
+      pickingBarHint.textContent =
+        n === 0
+          ? 'Снимок: коснитесь угла «1»'
+          : n === 1
+            ? 'Снимок: коснитесь угла «2»'
+            : 'Точки 1 и 2 стоят · «Готово»';
+    }
+    return;
+  }
+
+  if (state.activeTab === 'north' && state.satViewMode === 'plan-pick') {
+    const n = state.sat.planPts.length;
+    pickingUndoBtn.disabled = false;
+    pickingDoneBtn.disabled = n < 2;
+
+    if (state.satShortWallWarning) {
+      pickingBarHint.textContent = 'Стена короткая — приблизьте план';
+      pickingBarHint.classList.add('is-warning');
+    } else {
+      pickingBarHint.classList.remove('is-warning');
+      pickingBarHint.textContent =
+        n === 0
+          ? 'На плане: отметьте угол «1»'
+          : n === 1
+            ? 'На плане: отметьте угол «2»'
+            : 'Точки 1 и 2 стоят · «Готово»';
+    }
+    return;
+  }
+
+  // Шаг 3: контур стен
+  const count = state.vertices.length;
+  pickingUndoBtn.disabled = state.undoHistory.length === 0 && count === 0;
+  pickingDoneBtn.disabled = !stepsInfo.hasValidContour;
+
+  if (state.vastuMap && state.vastuMap.selfIntersects) {
+    pickingBarHint.textContent = 'Стены пересеклись · «Отменить»';
+    pickingBarHint.classList.add('is-warning');
+  } else if (state.contourTransientHint) {
+    pickingBarHint.textContent = 'Приблизьте план для короткой стены';
+    pickingBarHint.classList.add('is-warning');
+  } else {
+    pickingBarHint.classList.remove('is-warning');
+    if (count === 0) {
+      pickingBarHint.textContent = 'Коснитесь углов стен (от 3)';
+    } else if (count < 3) {
+      pickingBarHint.textContent = `${pluralizeCorners(count)} · ещё ${3 - count}`;
+    } else {
+      pickingBarHint.textContent = `${pluralizeCorners(count)} · нажмите «Готово»`;
     }
   }
-
-  if (bothReady && Number.isFinite(state.sat.houseTiltDeg)) {
-    satHouseTiltLine.textContent = formatHouseTiltLine(state.sat.houseTiltDeg);
-    satHouseTiltLine.hidden = false;
-  } else {
-    satHouseTiltLine.hidden = true;
-  }
-
-  satVerifyBox.hidden = !(bothReady && state.satViewMode === 'done');
 }
 
 function syncStatusBanner() {
+  if (!state.planCanvas) {
+    canvasHudTop.hidden = true;
+    canvasZoomControls.hidden = true;
+    return;
+  }
+
+  canvasHudTop.hidden = false;
+  canvasZoomControls.hidden = false;
+  const isPicking = studioShell.classList.contains('is-point-picking');
+  if (toggleCanvasSizeBtn) {
+    toggleCanvasSizeBtn.hidden = state.activeTab !== 'layers' || isPicking;
+  }
+
   if (state.activeTab === 'plan') {
+    statusBanner.textContent = 'План загружен · Перейдите к шагу «2. Север»';
+    return;
+  }
+
+  if (state.activeTab === 'north') {
     if (state.satShortWallWarning) {
       statusBanner.textContent = state.satShortWallWarning;
       return;
@@ -796,7 +970,7 @@ function syncStatusBanner() {
           ? 'Разведите двумя пальцами, чтобы увеличить дом, и отметьте угол «1»'
           : n === 1
             ? 'Снимок спутника: отметьте второй угол «2» подальше вдоль этой же стены'
-            : 'Стена 1 → 2 на снимке отмечена';
+            : 'Стена 1 → 2 на снимке отмечена — нажмите «Готово»';
       return;
     }
     if (state.satViewMode === 'plan-pick') {
@@ -806,21 +980,17 @@ function syncStatusBanner() {
           ? 'План квартиры: отметьте тот же угол «1» в том же порядке'
           : n === 1
             ? 'План квартиры: отметьте второй угол «2» этой же стены'
-            : 'Шаг «2. На плане»: точки «1» и «2» можно уточнить перетаскиванием';
+            : 'Точки «1» и «2» на плане отмечены — нажмите «Готово»';
       return;
     }
-    if (state.satViewMode === 'done' && state.northSet && state.sat.canvas) {
+    if (state.northSet && state.northSource === 'satellite') {
       statusBanner.textContent =
         'Проверьте направление «С»: окна стены 1 → 2 смотрят туда же, что на снимке';
       return;
     }
-    if (!state.northSet) {
-      statusBanner.textContent =
-        'Север не задан · Загрузите скриншот со спутника или поверните «С»';
-      return;
-    }
-    statusBanner.textContent =
-      'Направление «С» задано · При необходимости чуть подправьте стрелку «С»';
+    statusBanner.textContent = state.legacyManualNorthNotice
+      ? 'Задайте Север по спутнику · Загрузите скриншот дома со спутника'
+      : 'Шаг 2: загрузите скриншот дома со спутника (Север сверху)';
     return;
   }
 
@@ -838,25 +1008,19 @@ function syncStatusBanner() {
       statusBanner.textContent =
         'Линии стен пересекаются: передвиньте угол или нажмите «Отменить»';
     } else {
-      statusBanner.textContent = `Готово: ${pluralizeCorners(state.vertices.length)}. Неточный угол можно передвинуть пальцем`;
+      statusBanner.textContent = `Готово: ${pluralizeCorners(state.vertices.length)}. Неточный угол можно подвинуть пальцем`;
     }
     return;
   }
 
-  // Вкладка «Что показать на карте»
-  if (!state.northSet && state.vertices.length < 3) {
-    statusBanner.textContent =
-      'Укажите Север и обведите контур квартиры, чтобы увидеть карту';
-    return;
-  }
-  if (!state.northSet) {
-    statusBanner.textContent =
-      'Север ещё не задан · Откройте «План и север»';
+  // Шаг 4: «4. Карта»
+  if (!state.northSet || state.northSource !== 'satellite') {
+    statusBanner.textContent = 'Сначала задайте Север по спутнику на шаге «2. Север»';
     return;
   }
   if (!state.vastuMap || state.vastuMap.selfIntersects) {
     statusBanner.textContent =
-      'Откройте «Контур стен» и замкните внутренние углы квартиры';
+      'Откройте шаг «3. Контур стен» и замкните внутренние углы квартиры';
     return;
   }
   if (state.vastuMap.centerOutsideOrClipped) {
@@ -913,41 +1077,71 @@ function syncShareButtonVisibility(canExport) {
 }
 
 function syncInspectorUI() {
-  currentPlanTitle.textContent = state.planTitle || 'План квартиры';
+  const stepsInfo = computeStepsState(state);
+  state.activeTab = stepsInfo.activeTab;
 
-  if (rotateSheetHint) {
-    const showRotHint = Boolean(
-      state.northSet &&
-        state.alignNorthUp &&
-        state.satViewMode !== 'plan-pick' &&
-        !isViewingSatelliteCanvas()
-    );
-    rotateSheetHint.hidden = !showRotHint;
+  studioShell.classList.toggle('is-empty-plan', !stepsInfo.hasPlan);
+  studioShell.classList.toggle('is-point-picking', stepsInfo.isPointPicking);
+
+  // Синхронизация 4 нумерованных вкладок шагов
+  for (const step of stepsInfo.steps) {
+    const btn = tabButtons[step.id];
+    const pane = tabPanes[step.id];
+    if (btn) {
+      btn.disabled = step.disabled;
+      btn.classList.toggle('is-active', step.active);
+      btn.classList.toggle('is-completed', step.completed);
+      btn.setAttribute('aria-selected', step.active ? 'true' : 'false');
+      if (step.disabled) {
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = 'Сначала шаг 1: откройте план квартиры';
+      } else {
+        btn.removeAttribute('aria-disabled');
+        btn.title = '';
+      }
+
+      const titleEl = btn.querySelector('.mode-tab-title');
+      const subEl = btn.querySelector('.mode-tab-sub');
+      if (titleEl) titleEl.textContent = step.displayTitle;
+      if (subEl) {
+        subEl.textContent = step.lockedCaption;
+        subEl.hidden = !step.lockedCaption;
+      }
+    }
+    if (pane) {
+      pane.hidden = !step.active;
+      pane.classList.toggle('is-active', step.active);
+    }
   }
 
-  if (state.northSet && Number.isFinite(state.northAngleDeg)) {
-    const roundedNorth = Math.round(state.northAngleDeg * 10) / 10;
-    northReadoutBadge.textContent = `${String(roundedNorth).replace('.', ',')}°`;
-    northReadoutBadge.classList.remove('is-unset');
-    northSlider.value = String(Math.round(state.northAngleDeg));
-    if (document.activeElement !== northNumberInput) {
-      northNumberInput.value = String(roundedNorth);
-      lastValidNorthInput = String(roundedNorth);
+  // Шаг 1: до загрузки плана — одна крупная кнопка «Откройте план квартиры»
+  planEmptyState.hidden = stepsInfo.hasPlan;
+  planLoadedState.hidden = !stepsInfo.hasPlan;
+  if (stepsInfo.hasPlan) {
+    currentPlanTitle.textContent = state.planTitle || 'План квартиры';
+    if (!stepsInfo.hasNorth) {
+      planNextStepBtn.textContent = 'Далее: 2. Север по спутнику →';
+    } else if (!stepsInfo.hasValidContour) {
+      planNextStepBtn.textContent = 'Далее: 3. Контур стен →';
+    } else {
+      planNextStepBtn.textContent = 'Далее: 4. Карта →';
     }
-  } else {
-    northReadoutBadge.textContent = 'Не задан';
-    northReadoutBadge.classList.add('is-unset');
-    northSlider.value = '0';
-    if (document.activeElement !== northNumberInput) {
-      northNumberInput.value = '';
-      lastValidNorthInput = '';
+
+    if (rotateSheetHint) {
+      const showRotHint = Boolean(
+        stepsInfo.hasNorth && state.alignNorthUp && state.satViewMode !== 'plan-pick'
+      );
+      rotateSheetHint.hidden = !showRotHint;
     }
   }
 
-  syncSatelliteUI();
+  // Шаг 2: Север по спутнику
+  syncNorthStepUI(stepsInfo);
 
+  // Шаг 3: Контур стен
   vertexCountBadge.textContent = pluralizeCorners(state.vertices.length);
-  undoContourBtn.disabled = state.undoHistory.length === 0;
+  undoContourBtn.disabled = state.undoHistory.length === 0 && state.vertices.length === 0;
+  contourDoneBtn.disabled = !stepsInfo.hasValidContour;
   deleteVertexBtn.disabled = state.vertices.length === 0;
   clearContourBtn.disabled = state.vertices.length === 0;
   orthoSnapToggle.checked = state.orthoSnap;
@@ -963,7 +1157,10 @@ function syncInspectorUI() {
     contourWarningBox.hidden = true;
   }
 
-  // Переключатели слоёв и блок готовности карты
+  // Однострочная панель на телефоне для режимов постановки точек
+  syncMobilePickingBar(stepsInfo);
+
+  // Шаг 4: слои и сохранение карты
   toggleSectors.checked = state.layers.showSectors;
   if (toggleSectorLabels) {
     toggleSectorLabels.checked = Boolean(state.layers.showSectorLabels);
@@ -982,34 +1179,29 @@ function syncInspectorUI() {
   sectorOpacitySlider.value = String(opacityPct);
   sectorOpacityValue.textContent = `${opacityPct}%`;
 
-  const hasValidContour = Boolean(
-    state.vertices.length >= 3 && state.vastuMap && !state.vastuMap.selfIntersects
-  );
-  const canShowReadyMap = Boolean(state.northSet && hasValidContour);
   const canExport = canExportVastuMap(state);
-
   topExportBtn.disabled = !canExport;
+  // Кнопка в шапке не выставляется вперёд на шагах 1–3: показывается только на шаге 4, когда карта готова
+  topExportBtn.hidden = !(canExport && state.activeTab === 'layers');
   exportPngBtn.disabled = !canExport;
   syncShareButtonVisibility(canExport);
-  topExportBtn.title = canExport
-    ? 'Скачать готовую Васту-карту в PNG'
-    : 'Сначала задайте Север и замкните контур квартиры';
 
-  layersBlockedBox.hidden = canShowReadyMap;
-  layersReadyContent.hidden = !canShowReadyMap;
+  layersBlockedBox.hidden = stepsInfo.canShowMap;
+  layersReadyContent.hidden = !stepsInfo.canShowMap;
 
-  if (!canShowReadyMap) {
-    gotoNorthStepBtn.hidden = state.northSet;
-    gotoContourStepBtn.hidden = hasValidContour;
-    if (!state.northSet && !hasValidContour) {
-      layersBlockedText.textContent =
-        'Пока Север не задан и контур не замкнут, сектора и сетка пад скрыты. Выполните два шага: укажите Север по снимку со спутника и отметьте внутренние углы квартиры.';
-    } else if (!state.northSet) {
-      layersBlockedText.textContent =
-        'Контур квартиры готов. Осталось указать направление на Север по снимку со спутника (или ввести градусы вручную) во вкладке «План и север».';
+  if (!stepsInfo.canShowMap) {
+    // Всегда показываем ОДНУ кнопку следующего незавершённого шага по порядку (сначала шаг 2, затем шаг 3)
+    if (!stepsInfo.hasNorth) {
+      gotoNorthStepBtn.hidden = false;
+      gotoContourStepBtn.hidden = true;
+      layersBlockedText.textContent = stepsInfo.hasValidContour
+        ? 'Контур квартиры готов. Осталось указать Север по скриншоту со спутника на шаге «2. Север».'
+        : 'Сначала выполните шаг «2. Север»: загрузите скриншот дома со спутника и отметьте одну стену.';
     } else {
+      gotoNorthStepBtn.hidden = true;
+      gotoContourStepBtn.hidden = false;
       layersBlockedText.textContent =
-        'Направление на Север задано. Перейдите во вкладку «Контур стен» и отметьте минимум 3 внутренних угла квартиры по периметру.';
+        'Север по спутнику задан. Перейдите к шагу «3. Контур стен» и отметьте внутренние углы квартиры (от 3 точек).';
     }
   } else {
     if (state.vastuMap.centerOutsideOrClipped) {
@@ -1071,27 +1263,6 @@ function getCanvasLocalPoint(clientX, clientY) {
 }
 
 /**
- * Попадание в значок «С»: работает ТОЛЬКО во вкладке севера, строго по границам нарисованного значка
- * и проверяется раньше любых маркеров.
- */
-function hitTestNorthHandle(screenPt) {
-  if (
-    state.activeTab !== 'plan' ||
-    isViewingSatelliteCanvas() ||
-    state.satViewMode === 'plan-pick'
-  ) {
-    return false;
-  }
-  const h = state.lastRenderMeta && state.lastRenderMeta.northHandleScreen;
-  if (!h) return false;
-  const half = h.halfSize || 20;
-  return (
-    Math.abs(screenPt.x - h.x) <= half &&
-    Math.abs(screenPt.y - h.y) <= half
-  );
-}
-
-/**
  * Поиск существующего угла контура для начала перетаскивания (радиус 26 px для пальца, 12 px для мыши).
  * Само одиночное касание без сдвига пальца НЕ перехватывается этим радиусом!
  */
@@ -1127,7 +1298,6 @@ function hitTestEdgeMidpoint(screenPt, isTouch = false) {
     const b = vertexScreens[(i + 1) % vertexScreens.length];
     if (distance(a, b) < 44) continue;
     const mid = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
-    // Не перехватываем, если точка слишком близко к какому-либо углу
     if (vertexScreens.some((vp) => distance(mid, vp) < 16)) continue;
     const d = distance(screenPt, mid);
     if (d <= bestDist) {
@@ -1150,7 +1320,7 @@ function hitTestPointList(screenPt, imgPts, isTouch = false) {
 }
 
 /**
- * Обработка одиночного касания (tap без перетаскивания) во вкладке «Контур стен»:
+ * Обработка одиночного касания (tap без перетаскивания) на шаге «3. Контур стен»:
  * - если касание дальше 11 px от существующих углов -> добавляет новый угол (в том числе на коротких стенах лоджии);
  * - если касание слишком близко (<= 11 px) -> не ставит дубликат, выделяет угол и просит приблизить план.
  */
@@ -1261,41 +1431,17 @@ mapCanvas.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  // 2. Вкладка «План и север»:
-  //    - Стрелка «С» проверяется ПЕРВОЙ (раньше любых маркеров);
-  //    - Точки «1» и «2» на плане двигаются ТОЛЬКО на шаге «2. На плане» (satViewMode === 'plan-pick', где лист не повёрнут);
-  //      в виде «Проверка «С»» (satViewMode === 'done') точки 1 и 2 только для показа!
-  if (state.activeTab === 'plan') {
-    const northHit = hitTestNorthHandle(pt);
+  // 2. Шаг «2. Север»:
+  //    ручного поворота стрелки «С» НЕТ; точки «1» и «2» двигаются только на этапе plan-pick!
+  if (state.activeTab === 'north') {
     const planWallHitIdx =
-      !northHit && state.satViewMode === 'plan-pick' && state.sat.planPts.length > 0
+      state.satViewMode === 'plan-pick' && state.sat.planPts.length > 0
         ? hitTestPointList(pt, state.sat.planPts, isTouch)
         : -1;
     const hitDecision = resolvePlanTabHitAction({
-      hitNorthHandle: northHit,
       satViewMode: state.satViewMode,
       hitPlanWallPointIndex: planWallHitIdx,
     });
-
-    if (hitDecision.action === 'rotate-north') {
-      const h = state.lastRenderMeta.northHandleScreen;
-      const initialNorth =
-        state.northSet && Number.isFinite(state.northAngleDeg)
-          ? state.northAngleDeg
-          : 0;
-      gesture = {
-        type: 'rotate-north',
-        originX: h.originX,
-        originY: h.originY,
-        lastScreenAngle: vectorToAzimuthDeg(pt.x - h.originX, pt.y - h.originY),
-        startNorthDeg: initialNorth,
-        wasNorthSet: Boolean(state.northSet),
-        accumDelta: 0,
-        maxAbsDelta: 0,
-        committed: Boolean(state.northSet),
-      };
-      return;
-    }
 
     if (hitDecision.action === 'drag-plan-wall-pt') {
       gesture = {
@@ -1309,7 +1455,7 @@ mapCanvas.addEventListener('pointerdown', (e) => {
     }
   }
 
-  // 3. Вкладка «Контур стен»:
+  // 3. Шаг «3. Контур стен»:
   //    захват существующего угла активируется ТОЛЬКО когда реально начинается перетаскивание!
   if (state.activeTab === 'contour') {
     const vIdx = hitTestVertex(pt, isTouch);
@@ -1365,6 +1511,10 @@ mapCanvas.addEventListener('pointermove', (e) => {
 
   if (!gesture) {
     if (e.pointerType === 'mouse') {
+      if (!state.planCanvas && !isViewingSatelliteCanvas()) {
+        mapCanvas.style.cursor = 'default';
+        return;
+      }
       if (state.activeTab === 'contour') {
         const vIdx = hitTestVertex(pt, false);
         const eIdx = vIdx === -1 ? hitTestEdgeMidpoint(pt, false) : -1;
@@ -1374,12 +1524,11 @@ mapCanvas.addEventListener('pointermove', (e) => {
           mapCanvas.style.cursor = vIdx !== -1 || eIdx !== -1 ? 'pointer' : 'crosshair';
           requestRender();
         }
-      } else if (state.activeTab === 'plan') {
-        if (isViewingSatelliteCanvas() || state.satViewMode === 'plan-pick') {
-          mapCanvas.style.cursor = 'crosshair';
-        } else {
-          mapCanvas.style.cursor = hitTestNorthHandle(pt) ? 'pointer' : 'grab';
-        }
+      } else if (
+        state.activeTab === 'north' &&
+        (isViewingSatelliteCanvas() || state.satViewMode === 'plan-pick')
+      ) {
+        mapCanvas.style.cursor = 'crosshair';
       } else {
         mapCanvas.style.cursor = 'grab';
       }
@@ -1442,12 +1591,13 @@ mapCanvas.addEventListener('pointermove', (e) => {
               state.sat.planPts[1]
             );
             if (deg !== null) {
-              setNorthAngle(deg, { keepFrozenRotation: true });
+              applySatelliteNorthAngle(deg, { keepFrozenRotation: true });
               return;
             }
           }
         }
       }
+      syncInspectorUI();
       requestRender();
     } else if (gesture.target === 'plan' && state.satViewMode === 'plan-pick') {
       const cand = {
@@ -1462,7 +1612,7 @@ mapCanvas.addEventListener('pointermove', (e) => {
         gesture.tooShort = !isWallSegmentLongEnoughOnScreen(s0, s1);
         if (!gesture.tooShort) {
           state.satShortWallWarning = '';
-          if (state.sat.satPts.length === 2) {
+          if (state.sat.satPts.length === 2 && state.northSet) {
             const deg = northAngleFromWallSegments(
               state.sat.satPts[0],
               state.sat.satPts[1],
@@ -1474,43 +1624,15 @@ mapCanvas.addEventListener('pointermove', (e) => {
                 state.sat.satPts[0],
                 state.sat.satPts[1]
               );
-              setNorthAngle(deg, { keepFrozenRotation: true });
+              applySatelliteNorthAngle(deg, { keepFrozenRotation: true });
               return;
             }
           }
         }
       }
+      syncInspectorUI();
       requestRender();
     }
-    return;
-  }
-
-  if (gesture.type === 'rotate-north') {
-    const currAngle = vectorToAzimuthDeg(pt.x - gesture.originX, pt.y - gesture.originY);
-    const stepDelta = signedAngleDeltaDeg(gesture.lastScreenAngle, currAngle);
-    gesture.accumDelta += stepDelta;
-    gesture.maxAbsDelta = Math.max(gesture.maxAbsDelta, Math.abs(gesture.accumDelta));
-    gesture.lastScreenAngle = currAngle;
-
-    if (
-      !gesture.committed &&
-      shouldCommitNorthHandleTurn({
-        wasNorthSet: gesture.wasNorthSet,
-        maxAbsDeltaDeg: gesture.maxAbsDelta,
-      })
-    ) {
-      gesture.committed = true;
-    }
-
-    // Если Север не был задан и стрелку повернули меньше чем на 3° — Север остаётся незаданным!
-    if (!gesture.committed) {
-      return;
-    }
-
-    setNorthAngle(gesture.startNorthDeg + gesture.accumDelta, {
-      keepFrozenRotation: true,
-      clearSatTilt: true,
-    });
     return;
   }
 
@@ -1591,18 +1713,7 @@ mapCanvas.addEventListener('pointerup', (e) => {
   const pt = getCanvasLocalPoint(e.clientX, e.clientY);
   activePointers.delete(e.pointerId);
 
-  let shouldFitOnUnfreeze = false;
-
-  if (gesture && gesture.type === 'rotate-north') {
-    if (!gesture.committed) {
-      // Касание «С» без поворота > 3° не задаёт Север около 0°
-      statusBanner.textContent =
-        'Потяните стрелку «С» по кругу больше чем на 3°, чтобы задать Север, или загрузите снимок со спутника';
-    } else {
-      shouldFitOnUnfreeze = Boolean(state.alignNorthUp);
-      schedulePersist();
-    }
-  } else if (gesture && gesture.type === 'drag-sat-pt') {
+  if (gesture && gesture.type === 'drag-sat-pt') {
     if (gesture.tooShort && gesture.savedPt) {
       if (gesture.target === 'sat') {
         state.sat.satPts[gesture.pointIndex] = gesture.savedPt;
@@ -1652,7 +1763,8 @@ mapCanvas.addEventListener('pointerup', (e) => {
           const s1 = xf.planToScreen(state.sat.satPts[0]);
           const s2 = xf.planToScreen(clamped);
           if (!isWallSegmentLongEnoughOnScreen(s1, s2)) {
-            state.satShortWallWarning = `Стена на снимке получилась слишком короткой — разведите двумя пальцами, чтобы увеличить дом, и отметьте два угла подальше друг от друга.`;
+            state.satShortWallWarning =
+              'Стена на снимке получилась слишком короткой — разведите двумя пальцами, чтобы увеличить дом, и отметьте два угла подальше друг от друга.';
             syncInspectorUI();
             requestRender();
           } else {
@@ -1662,21 +1774,14 @@ mapCanvas.addEventListener('pointerup', (e) => {
               state.sat.satPts[0],
               state.sat.satPts[1]
             );
-            if (state.sat.planPts.length === 2) {
-              state.frozenRotationDeg = null;
-              tryComputeNorthFromSatellite();
-            } else {
-              state.satViewMode = 'plan-pick';
-              state.frozenRotationDeg = null;
-              syncInspectorUI();
-              fitPlanToViewport();
-            }
+            syncInspectorUI();
+            requestRender();
           }
         }
       }
     }
     // 2. Отметка точек 1 и 2 стены на плане квартиры (с проверкой длины >= 100 экранных пикселей)
-    else if (state.activeTab === 'plan' && state.satViewMode === 'plan-pick') {
+    else if (state.activeTab === 'north' && state.satViewMode === 'plan-pick') {
       if (
         rawImgPt.x >= -15 &&
         rawImgPt.x <= state.planWidth + 15 &&
@@ -1697,26 +1802,27 @@ mapCanvas.addEventListener('pointerup', (e) => {
           const s1 = xf.planToScreen(state.sat.planPts[0]);
           const s2 = xf.planToScreen(clamped);
           if (!isWallSegmentLongEnoughOnScreen(s1, s2)) {
-            state.satShortWallWarning = `Стена на плане получилась слишком короткой — приблизьте план двумя пальцами и отметьте два угла подальше друг от друга.`;
+            state.satShortWallWarning =
+              'Стена на плане получилась слишком короткой — приблизьте план двумя пальцами и отметьте два угла подальше друг от друга.';
             syncInspectorUI();
             requestRender();
           } else {
             state.satShortWallWarning = '';
             state.sat.planPts.push(clamped);
-            state.frozenRotationDeg = null;
-            tryComputeNorthFromSatellite();
+            syncInspectorUI();
+            requestRender();
           }
         }
       }
     }
-    // 3. Добавление внутреннего угла во вкладке «Контур стен» (только по pointerup!)
+    // 3. Добавление внутреннего угла на шаге «3. Контур стен»
     else if (state.activeTab === 'contour') {
       handleContourTap(pt);
     }
   }
 
   finalizeRemainingPointers();
-  unfreezeScreenRotationIfIdle({ fitIfRotationChanged: shouldFitOnUnfreeze });
+  unfreezeScreenRotationIfIdle({ fitIfRotationChanged: false });
 });
 
 // pointercancel никогда не добавляет новый угол!
@@ -1739,15 +1845,110 @@ mapCanvas.addEventListener(
 );
 
 // ============================================================================
+// Действия кнопок «Отменить» / «Готово» в режимах постановки точек и на панелях
+// ============================================================================
+function handlePointPickingUndo() {
+  if (state.activeTab === 'north' && state.satViewMode === 'sat') {
+    state.satShortWallWarning = '';
+    if (state.sat.satPts.length > 0) {
+      state.sat.satPts.pop();
+      syncInspectorUI();
+      requestRender();
+    } else {
+      state.sat.canvas = null;
+      state.sat.satPts = [];
+      state.sat.planPts = [];
+      state.satViewMode =
+        state.northSet && state.northSource === 'satellite' ? 'done' : 'idle';
+      syncInspectorUI();
+      fitPlanToViewport();
+    }
+    return;
+  }
+
+  if (state.activeTab === 'north' && state.satViewMode === 'plan-pick') {
+    state.satShortWallWarning = '';
+    if (state.sat.planPts.length > 0) {
+      state.sat.planPts.pop();
+      syncInspectorUI();
+      requestRender();
+    } else if (state.sat.canvas) {
+      state.satViewMode = 'sat';
+      syncInspectorUI();
+      fitSatelliteToViewport({ mode: 'large' });
+    }
+    return;
+  }
+
+  if (state.activeTab === 'contour') {
+    handleContourUndoOrPop();
+  }
+}
+
+function handlePointPickingDone() {
+  if (state.activeTab === 'north' && state.satViewMode === 'sat') {
+    if (state.sat.satPts.length < 2) return;
+    state.satShortWallWarning = '';
+    state.frozenRotationDeg = null;
+    if (state.sat.planPts.length === 2) {
+      tryComputeNorthFromSatellite();
+    } else {
+      state.satViewMode = 'plan-pick';
+      syncInspectorUI();
+      fitPlanToViewport();
+    }
+    return;
+  }
+
+  if (state.activeTab === 'north' && state.satViewMode === 'plan-pick') {
+    if (state.sat.planPts.length < 2) return;
+    state.satShortWallWarning = '';
+    state.frozenRotationDeg = null;
+    tryComputeNorthFromSatellite();
+    return;
+  }
+
+  if (state.activeTab === 'contour') {
+    const stepsInfo = computeStepsState(state);
+    if (!stepsInfo.hasValidContour) return;
+    setActiveTab(stepsInfo.hasNorth ? 'layers' : 'north');
+  }
+}
+
+// ============================================================================
 // Привязка кнопок интерфейса
 // ============================================================================
-for (const btn of tabButtons) {
+for (const btn of Object.values(tabButtons)) {
+  if (!btn) continue;
   btn.addEventListener('click', () => {
+    if (btn.disabled) return;
     setActiveTab(btn.dataset.tab);
   });
 }
 
-gotoNorthStepBtn.addEventListener('click', () => setActiveTab('plan'));
+pickingUndoBtn.addEventListener('click', handlePointPickingUndo);
+pickingDoneBtn.addEventListener('click', handlePointPickingDone);
+satDesktopUndoBtn.addEventListener('click', handlePointPickingUndo);
+satDesktopDoneBtn.addEventListener('click', handlePointPickingDone);
+contourDoneBtn.addEventListener('click', handlePointPickingDone);
+
+planNextStepBtn.addEventListener('click', () => {
+  const stepsInfo = computeStepsState(state);
+  if (!stepsInfo.hasNorth) {
+    setActiveTab('north');
+  } else if (!stepsInfo.hasValidContour) {
+    setActiveTab('contour');
+  } else {
+    setActiveTab('layers');
+  }
+});
+
+northNextContourBtn.addEventListener('click', () => {
+  const stepsInfo = computeStepsState(state);
+  setActiveTab(stepsInfo.hasValidContour ? 'layers' : 'contour');
+});
+
+gotoNorthStepBtn.addEventListener('click', () => setActiveTab('north'));
 gotoContourStepBtn.addEventListener('click', () => setActiveTab('contour'));
 
 zoomInBtn.addEventListener('click', () => zoomByFactor(1.25));
@@ -1772,20 +1973,22 @@ toggleCanvasSizeBtn.addEventListener('click', () => {
   }, 30);
 });
 
-// Загрузка собственного плана ученицы: Север не задан, не берёт 22° с учебного плана!
+// Шаг 1: загрузка собственного плана ученицы -> переход сразу на шаг 2 («2. Север»)
 planFileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   planFileInput.value = '';
   if (!file) return;
 
   const hasExistingUserCorners =
-    state.vertices.length > 0 && (!state.isSamplePlan || state.sampleModified);
+    state.planCanvas &&
+    state.vertices.length > 0 &&
+    (!state.isSamplePlan || state.sampleModified);
 
   if (hasExistingUserCorners) {
     const confirmed = await askUserConfirmation({
       title: 'Заменить текущий план?',
       message:
-        'На текущем плане уже отмечены углы контура. При открытии нового файла контур и настройка Севера будут сброшены.',
+        'На текущем плане уже отмечены углы контура. При открытии нового файла контур и привязка Севера будут сброшены.',
       confirmText: 'Открыть новый план',
       cancelText: 'Оставить текущий',
     });
@@ -1793,7 +1996,9 @@ planFileInput.addEventListener('change', async (e) => {
   }
 
   planErrorBox.hidden = true;
-  statusBanner.textContent = 'Открываем файл плана…';
+  if (state.planCanvas) {
+    statusBanner.textContent = 'Открываем файл плана…';
+  }
 
   try {
     const loaded = await loadPlanFromFile(file);
@@ -1811,25 +2016,26 @@ planFileInput.addEventListener('change', async (e) => {
     state.undoHistory.clear();
     state.selectedVertexIndex = -1;
     state.contourTransientHint = '';
+    state.mapExported = false;
 
-    // Север на новом плане не задан — не переносим 22° с учебного примера!
     state.northSet = false;
+    state.northSource = null;
     state.northAngleDeg = null;
+    state.legacyManualNorthNotice = false;
     state.frozenRotationDeg = null;
     state.alignNorthUp = true;
-    lastValidNorthInput = '';
 
+    state.sat.canvas = null;
+    state.sat.width = 0;
+    state.sat.height = 0;
+    state.sat.title = '';
+    state.sat.satPts = [];
     state.sat.planPts = [];
+    state.sat.houseTiltDeg = null;
     state.satShortWallWarning = '';
-    if (state.sat.canvas && state.sat.satPts.length === 2) {
-      state.satViewMode = 'plan-pick';
-    } else if (state.sat.canvas) {
-      state.satViewMode = 'sat';
-    } else {
-      state.satViewMode = 'idle';
-    }
+    state.satViewMode = 'idle';
 
-    setActiveTab('plan');
+    state.activeTab = 'north';
     recomputeVastuMap();
     fitPlanToViewport();
     schedulePersist(true);
@@ -1840,16 +2046,18 @@ planFileInput.addEventListener('change', async (e) => {
         : 'Не получилось открыть этот файл плана — загрузите план как фото или скриншот.';
     planErrorBox.textContent = msg;
     planErrorBox.hidden = false;
-    statusBanner.textContent = msg;
     setActiveTab('plan');
+    if (state.planCanvas) {
+      statusBanner.textContent = msg;
+    }
   }
 });
 
-// Загрузка скриншота спутниковой карты (открывается сразу крупно!)
+// Шаг 2: загрузка скриншота спутниковой карты (открывается сразу крупно для отметки точек 1 и 2!)
 satFileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   satFileInput.value = '';
-  if (!file) return;
+  if (!file || !state.planCanvas) return;
 
   planErrorBox.hidden = true;
   try {
@@ -1864,17 +2072,9 @@ satFileInput.addEventListener('change', async (e) => {
     state.satShortWallWarning = '';
     state.satViewMode = 'sat';
 
-    setActiveTab('plan');
+    state.activeTab = 'north';
     syncInspectorUI();
     fitSatelliteToViewport({ mode: 'large' });
-
-    const satBlock = satStepperBox.closest('.panel-block');
-    if (satBlock && inspectorScroll) {
-      const deltaTop =
-        satBlock.getBoundingClientRect().top -
-        inspectorScroll.getBoundingClientRect().top;
-      inspectorScroll.scrollTop = Math.max(0, inspectorScroll.scrollTop + deltaTop - 6);
-    }
   } catch (err) {
     const msg =
       err && err.message
@@ -1886,45 +2086,26 @@ satFileInput.addEventListener('change', async (e) => {
   }
 });
 
-satStepSatBtn.addEventListener('click', () => {
-  if (!state.sat.canvas) return;
-  state.satShortWallWarning = '';
-  state.satViewMode = 'sat';
-  syncInspectorUI();
-  fitSatelliteToViewport({ mode: 'large' });
-});
-
-satStepPlanBtn.addEventListener('click', () => {
-  if (!state.sat.canvas) return;
-  state.satShortWallWarning = '';
-  state.satViewMode = 'plan-pick';
-  syncInspectorUI();
-  fitPlanToViewport();
-});
-
-satStepDoneBtn.addEventListener('click', () => {
-  if (!state.northSet) return;
-  state.satShortWallWarning = '';
-  state.satViewMode = 'done';
-  syncInspectorUI();
-  fitPlanToViewport();
-  scrollVerifyNoteIntoView();
-});
-
 satResetPointsBtn.addEventListener('click', () => {
-  if (!state.sat.canvas) return;
   state.satShortWallWarning = '';
-  if (state.satViewMode === 'plan-pick') {
-    state.sat.planPts = [];
-  } else {
+  if (state.sat.canvas) {
     state.sat.satPts = [];
     state.sat.planPts = [];
     state.sat.houseTiltDeg = null;
     state.satViewMode = 'sat';
+    syncInspectorUI();
     fitSatelliteToViewport({ mode: 'large' });
+  } else {
+    state.northSet = false;
+    state.northSource = null;
+    state.northAngleDeg = null;
+    state.sat.planPts = [];
+    state.sat.houseTiltDeg = null;
+    state.satViewMode = 'idle';
+    recomputeVastuMap();
+    fitPlanToViewport();
+    schedulePersist();
   }
-  syncInspectorUI();
-  requestRender();
 });
 
 // Поворот загруженного листа плана на 90° по часовой стрелке (единый снимок в историю «Отменить»)
@@ -1932,7 +2113,9 @@ rotatePlan90Btn.addEventListener('click', () => {
   if (!state.planCanvas || !state.basePlanCanvas) return;
   pushSheetRotateUndoSnapshot();
 
-  const wasNorthUp = Boolean(state.northSet && state.alignNorthUp && state.satViewMode !== 'plan-pick');
+  const wasNorthUp = Boolean(
+    state.northSet && state.alignNorthUp && state.satViewMode !== 'plan-pick'
+  );
 
   const rotatedState = applySheetRotation90CW({
     sheetQuarterTurns: state.sheetQuarterTurns,
@@ -1941,6 +2124,7 @@ rotatePlan90Btn.addEventListener('click', () => {
     vertices: state.vertices,
     satPlanPts: state.sat.planPts,
     northSet: state.northSet,
+    northSource: state.northSource,
     northAngleDeg: state.northAngleDeg,
   });
 
@@ -1954,141 +2138,21 @@ rotatePlan90Btn.addEventListener('click', () => {
   state.vertices = rotatedState.vertices;
   state.sat.planPts = rotatedState.satPlanPts;
   state.northSet = rotatedState.northSet;
+  state.northSource = rotatedState.northSource;
   state.northAngleDeg = rotatedState.northAngleDeg;
-  lastValidNorthInput =
-    state.northSet && Number.isFinite(state.northAngleDeg)
-      ? String(Math.round(state.northAngleDeg * 10) / 10)
-      : '';
 
   recomputeVastuMap();
   fitPlanToViewport();
   if (wasNorthUp) {
     statusBanner.textContent =
-      'Лист повёрнут на 90° · На экране Север остаётся сверху (переключается в «Что показать на карте»)';
+      'Лист повёрнут на 90° · На экране Север остаётся сверху (переключается в «4. Карта»)';
   }
   schedulePersist();
 });
 
-// Открытие учебного Г-образного плана
-function openSamplePlan({ preserveSettings = false } = {}) {
-  const sample = createSampleFloorPlan();
-  state.isSamplePlan = true;
-  state.sampleModified = false;
-  state.basePlanCanvas = sample.canvas;
-  state.sheetQuarterTurns = 0;
-  state.planCanvas = sample.canvas;
-  state.planWidth = sample.width;
-  state.planHeight = sample.height;
-  state.planTitle = sample.title;
-  cachedBasePlanDataUrl = null;
-
-  state.vertices = clonePointList(sample.defaultVertices);
-  state.undoHistory.clear();
-  state.selectedVertexIndex = -1;
-  state.contourTransientHint = '';
-  state.northSet = true;
-  state.northAngleDeg = sample.defaultNorthDeg;
-  state.frozenRotationDeg = null;
-  lastValidNorthInput = String(sample.defaultNorthDeg);
-
-  state.sat.canvas = null;
-  state.sat.satPts = [];
-  state.sat.planPts = [];
-  state.sat.houseTiltDeg = null;
-  state.satShortWallWarning = '';
-  state.satViewMode = 'idle';
-
-  if (!preserveSettings) {
-    state.alignNorthUp = true;
-  }
-
-  planErrorBox.hidden = true;
-  recomputeVastuMap();
-  fitPlanToViewport();
-}
-
-loadSampleBtn.addEventListener('click', async () => {
-  const confirmed = await askUserConfirmation({
-    title: 'Вернуть учебный план?',
-    message:
-      'Текущий чертёж, отмеченные углы и настройка Севера заменятся учебным примером Г-образной квартиры.',
-    confirmText: 'Вернуть учебный план',
-    cancelText: 'Отмена',
-  });
-  if (!confirmed) return;
-  openSamplePlan();
-  schedulePersist(true);
-});
-
-// Управление направлением на Север (ползунок, поле 0–360° с выделением при фокусе, быстрые кнопки)
-northSlider.addEventListener('input', () => {
-  const val = Number(northSlider.value);
-  if (Number.isFinite(val)) {
-    setNorthAngle(val, { fitAfter: state.alignNorthUp, clearSatTilt: true });
-  }
-});
-
-let selectOnMouseUp = false;
-northNumberInput.addEventListener('focus', () => {
-  northNumberInput.select();
-  selectOnMouseUp = true;
-});
-northNumberInput.addEventListener('mouseup', (e) => {
-  if (selectOnMouseUp) {
-    e.preventDefault();
-    selectOnMouseUp = false;
-  }
-});
-
-northNumberInput.addEventListener('keydown', (e) => {
-  if (e.key === '-' || e.key === '+' || e.key === 'e' || e.key === 'E') {
-    e.preventDefault();
-  }
-});
-
-northNumberInput.addEventListener('input', () => {
-  if (northNumberInput.validity && northNumberInput.validity.badInput) {
-    northNumberInput.value = lastValidNorthInput;
-    return;
-  }
-  const check = validateNorthDegreeInput(northNumberInput.value);
-  if (!check.ok) {
-    northNumberInput.value = lastValidNorthInput;
-    return;
-  }
-  if (check.empty) {
-    return;
-  }
-  lastValidNorthInput = northNumberInput.value;
-  setNorthAngle(check.value, { fitAfter: state.alignNorthUp, clearSatTilt: true });
-});
-
-northNumberInput.addEventListener('blur', () => {
-  const check = validateNorthDegreeInput(northNumberInput.value);
-  if (!check.ok || check.empty) {
-    if (state.northSet && Number.isFinite(state.northAngleDeg)) {
-      const rounded = Math.round(state.northAngleDeg * 10) / 10;
-      northNumberInput.value = String(rounded);
-      lastValidNorthInput = String(rounded);
-    } else {
-      northNumberInput.value = '';
-      lastValidNorthInput = '';
-    }
-  }
-});
-
-for (const chip of document.querySelectorAll('[data-north]')) {
-  chip.addEventListener('click', () => {
-    setNorthAngle(Number(chip.getAttribute('data-north')), {
-      fitAfter: state.alignNorthUp,
-      clearSatTilt: true,
-    });
-  });
-}
-
 // Кнопки редактирования контура (сохраняют в историю ТОЛЬКО углы контура!)
 undoContourBtn.addEventListener('click', () => {
-  performUndo();
+  handleContourUndoOrPop();
 });
 
 deleteVertexBtn.addEventListener('click', () => {
@@ -2189,10 +2253,7 @@ sectorOpacitySlider.addEventListener('input', () => {
 });
 
 // ============================================================================
-// Сохранение готовой карты и отдельная отправка через «Поделиться»:
-// - на Android и компьютере «Скачать карту» скачивает файл напрямую; «Поделиться» — отдельная кнопка;
-// - на iPhone «Скачать карту» открывает системное окно «Поделиться» (там «Сохранить изображение» в Фото);
-// - после «Поделиться» выводится «Отправлено», а после скачивания файла — «Карта сохранена (...)».
+// Сохранение готовой карты и отдельная отправка через «Поделиться»
 // ============================================================================
 function dataUrlToBlobSync(dataUrl) {
   const parts = dataUrl.split(',');
@@ -2245,7 +2306,6 @@ function canInvokeWebShareWithFile(file) {
   const isNativeShare = shareFnSource.includes('[native code]');
   const ua = (navigator && navigator.userAgent) || '';
 
-  // В автоматизированном безголовом браузере нативный вызов ОС без окна зависает (но моки в тестах пропускаем!)
   if (isNativeShare && (navigator.webdriver || /HeadlessChrome\//i.test(ua))) {
     return false;
   }
@@ -2258,14 +2318,14 @@ function canInvokeWebShareWithFile(file) {
 }
 
 function buildExportArtifactOrWarn() {
+  if (!state.planCanvas) {
+    setActiveTab('plan');
+    return null;
+  }
   if (!canExportVastuMap(state)) {
-    if (!state.northSet) {
-      statusBanner.textContent =
-        'Сначала задайте Север во вкладке «План и север», чтобы скачать карту';
-      setActiveTab('plan');
+    if (!state.northSet || state.northSource !== 'satellite') {
+      setActiveTab('north');
     } else {
-      statusBanner.textContent =
-        'Сначала замкните контур квартиры (минимум 3 угла) во вкладке «Контур стен»';
       setActiveTab('contour');
     }
     return null;
@@ -2282,6 +2342,13 @@ function buildExportArtifactOrWarn() {
   return { filename, dataUrl, blob, file };
 }
 
+function markMapExportCompleted() {
+  if (!state.mapExported) {
+    state.mapExported = true;
+    syncInspectorUI();
+  }
+}
+
 function triggerDirectFileDownload({ filename, dataUrl, blob }) {
   const platInfo = detectExportPlatform({
     userAgent: navigator?.userAgent || '',
@@ -2290,6 +2357,7 @@ function triggerDirectFileDownload({ filename, dataUrl, blob }) {
   });
 
   if (platInfo.isEmbeddedMessenger || !('download' in HTMLAnchorElement.prototype)) {
+    markMapExportCompleted();
     openImageHoldOverlay(dataUrl);
     showSaveConfirmation('Нажмите и удерживайте картинку, чтобы сохранить');
     return;
@@ -2304,8 +2372,10 @@ function triggerDirectFileDownload({ filename, dataUrl, blob }) {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 6000);
+    markMapExportCompleted();
     showSaveConfirmation(`Карта сохранена (${filename})`);
   } catch {
+    markMapExportCompleted();
     openImageHoldOverlay(dataUrl);
     showSaveConfirmation('Нажмите и удерживайте картинку, чтобы сохранить');
   }
@@ -2321,14 +2391,13 @@ async function saveReadyMapPng() {
     maxTouchPoints: navigator?.maxTouchPoints || 0,
   });
 
-  // На iPhone (вне встроенного мессенджера) открываем системное окно «Поделиться» (там «Сохранить изображение» в Фото);
-  // на Android и на компьютере сразу скачиваем файл PNG!
   if (platInfo.preferShareSheetOnDownload && canInvokeWebShareWithFile(artifact.file)) {
     try {
       await navigator.share({
         files: [artifact.file],
         title: 'Васту-карта квартиры',
       });
+      markMapExportCompleted();
       showSaveConfirmation('Отправлено');
       return;
     } catch (err) {
@@ -2351,6 +2420,7 @@ async function shareReadyMapPng() {
         files: [artifact.file],
         title: 'Васту-карта квартиры',
       });
+      markMapExportCompleted();
       showSaveConfirmation('Отправлено');
       return;
     } catch (err) {
@@ -2360,6 +2430,7 @@ async function shareReadyMapPng() {
     }
   }
 
+  markMapExportCompleted();
   openImageHoldOverlay(artifact.dataUrl);
   showSaveConfirmation('Нажмите и удерживайте картинку, чтобы сохранить или переслать');
 }
@@ -2384,14 +2455,23 @@ window.addEventListener('keydown', (e) => {
   }
 
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
-    if (state.undoHistory.length > 0 && confirmModal.hidden) {
+    if (confirmModal.hidden && (state.undoHistory.length > 0 || state.vertices.length > 0)) {
       e.preventDefault();
-      performUndo();
+      handlePointPickingUndo();
     }
   }
 });
 
-const resizeObserver = new ResizeObserver(() => {
+let lastObservedStageWidth = 0;
+let lastObservedStageHeight = 0;
+const resizeObserver = new ResizeObserver((entries) => {
+  const entry = entries && entries[0];
+  const w = entry ? Math.round(entry.contentRect.width) : 0;
+  const h = entry ? Math.round(entry.contentRect.height) : 0;
+  if (w === lastObservedStageWidth && h === lastObservedStageHeight) return;
+  lastObservedStageWidth = w;
+  lastObservedStageHeight = h;
+
   // Не сбиваем масштаб и замороженный поворот посреди активного жеста пальцем!
   if (gesture || activePointers.size > 0 || Number.isFinite(state.frozenRotationDeg)) {
     requestRender();
@@ -2399,82 +2479,123 @@ const resizeObserver = new ResizeObserver(() => {
   }
   if (isViewingSatelliteCanvas()) {
     fitSatelliteToViewport({ mode: 'large' });
-  } else {
+  } else if (state.planCanvas) {
     fitPlanToViewport();
+  } else {
+    requestRender();
   }
 });
 resizeObserver.observe(canvasStage);
 
 // ============================================================================
-// Инициализация и восстановление сохранённой работы ученицы
+// Инициализация и восстановление сохранённой работы ученицы:
+// - при первом входе открывается Шаг 1 («Откройте план квартиры»), шаги 2–4 заблокированы;
+// - старый черновик с «ручным» Севером открывается без ошибок, сохраняет план и контур,
+//   и переводит ученицу на Шаг 2 с просьбой задать Север по спутнику.
 // ============================================================================
+function resetToFreshStep1() {
+  state.isSamplePlan = false;
+  state.sampleModified = false;
+  state.basePlanCanvas = null;
+  state.sheetQuarterTurns = 0;
+  state.planCanvas = null;
+  state.planWidth = 0;
+  state.planHeight = 0;
+  state.planTitle = '';
+  cachedBasePlanDataUrl = null;
+
+  state.vertices = [];
+  state.undoHistory.clear();
+  state.selectedVertexIndex = -1;
+  state.contourTransientHint = '';
+  state.mapExported = false;
+
+  state.northSet = false;
+  state.northSource = null;
+  state.northAngleDeg = null;
+  state.legacyManualNorthNotice = false;
+  state.frozenRotationDeg = null;
+  state.alignNorthUp = true;
+
+  state.sat.canvas = null;
+  state.sat.satPts = [];
+  state.sat.planPts = [];
+  state.sat.houseTiltDeg = null;
+  state.satShortWallWarning = '';
+  state.satViewMode = 'idle';
+
+  state.activeTab = 'plan';
+  recomputeVastuMap();
+}
+
 async function restoreOrInit() {
   const saved = await loadWorkspaceSession();
-  if (saved && Array.isArray(saved.vertices)) {
+  const normalized = normalizeRestoredDraft(saved);
+
+  if (normalized.hasDraft) {
     try {
-      if (saved.isSamplePlan) {
+      if (normalized.isSamplePlan) {
         const sample = createSampleFloorPlan();
         state.isSamplePlan = true;
-        state.sampleModified = Boolean(saved.sampleModified);
+        state.sampleModified = normalized.sampleModified;
         state.basePlanCanvas = sample.canvas;
         cachedBasePlanDataUrl = null;
-      } else if (saved.basePlanDataUrl) {
+      } else if (normalized.basePlanDataUrl) {
         const restoredBase = await restorePlanCanvasFromDataUrl(
-          saved.basePlanDataUrl,
-          saved.basePlanWidth,
-          saved.basePlanHeight
+          normalized.basePlanDataUrl,
+          normalized.basePlanWidth,
+          normalized.basePlanHeight
         );
         state.isSamplePlan = false;
         state.sampleModified = false;
         state.basePlanCanvas = restoredBase;
-        cachedBasePlanDataUrl = saved.basePlanDataUrl;
+        cachedBasePlanDataUrl = normalized.basePlanDataUrl;
       } else {
         throw new Error('Missing saved plan image');
       }
 
-      state.sheetQuarterTurns = ((saved.sheetQuarterTurns || 0) % 4 + 4) % 4;
+      state.sheetQuarterTurns = normalized.sheetQuarterTurns;
       state.planCanvas =
         state.sheetQuarterTurns === 0
           ? state.basePlanCanvas
           : rotatePlanCanvas(state.basePlanCanvas, state.sheetQuarterTurns);
       state.planWidth = state.planCanvas.width;
       state.planHeight = state.planCanvas.height;
-      state.planTitle = saved.planTitle || 'План квартиры';
+      state.planTitle = normalized.planTitle;
 
-      state.vertices = clonePointList(saved.vertices);
+      state.vertices = normalized.vertices;
       state.undoHistory.clear();
       state.selectedVertexIndex = -1;
       state.contourTransientHint = '';
+      state.mapExported = false;
 
-      state.northSet = Boolean(saved.northSet && Number.isFinite(saved.northAngleDeg));
-      state.northAngleDeg = state.northSet ? normalizeDeg(saved.northAngleDeg) : null;
-      lastValidNorthInput = state.northSet
-        ? String(Math.round(state.northAngleDeg * 10) / 10)
-        : '';
+      state.northSet = normalized.northSet;
+      state.northSource = normalized.northSource;
+      state.northAngleDeg = normalized.northAngleDeg;
+      state.legacyManualNorthNotice = normalized.needsSatelliteNorthPrompt;
 
-      state.alignNorthUp =
-        typeof saved.alignNorthUp === 'boolean' ? saved.alignNorthUp : true;
-      state.orthoSnap =
-        typeof saved.orthoSnap === 'boolean' ? saved.orthoSnap : true;
+      state.sat.canvas = null;
+      state.sat.satPts = [];
+      state.sat.planPts = normalized.satPlanPts;
+      state.sat.houseTiltDeg = normalized.satHouseTiltDeg;
+      state.satViewMode = normalized.northSet ? 'done' : 'idle';
 
-      state.layers = restoreSavedLayers(saved.layers);
+      state.alignNorthUp = normalized.alignNorthUp;
+      state.orthoSnap = normalized.orthoSnap;
+      state.layers = normalized.layers;
 
-      const restoredTab =
-        saved.activeTab && tabPanes[saved.activeTab] ? saved.activeTab : 'layers';
       recomputeVastuMap();
-      setActiveTab(restoredTab);
+      setActiveTab(normalized.activeTab);
       fitPlanToViewport();
       return;
     } catch {
-      // Если сохранённые данные повреждены, мягко открываем учебный пример
+      // Если сохранённые данные повреждены, мягко начинаем с Шага 1
     }
   }
 
-  openSamplePlan();
-  setActiveTab('layers');
+  resetToFreshStep1();
 }
 
-// Поздно пришедший шрифт НЕ заменяет работу ученицы учебным планом — только перерисовывает!
 function setupFontReadyRedraw() {
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => {
@@ -2498,12 +2619,14 @@ restoreOrInit().then(() => {
 // Экспорт ссылки на состояние для автопроверок
 window.__vastuApp = {
   state,
-  setNorthAngle,
   setActiveTab,
   recomputeVastuMap,
   syncInspectorUI,
   fitPlanToViewport,
   fitSatelliteToViewport,
   performUndo,
+  handlePointPickingUndo,
+  handlePointPickingDone,
+  computeStepsState: () => computeStepsState(state),
   exportMapToPngCanvas: () => exportMapToPngCanvas(state),
 };

@@ -28,21 +28,21 @@ import {
 } from '../src/geometry.js';
 import {
   MIN_WALL_SEGMENT_SCREEN_PX,
-  MIN_NORTH_HANDLE_TURN_DEG,
   MIN_NEW_CORNER_DIST_PX,
+  STEP_LOCKED_CAPTION,
+  computeStepsState,
+  normalizeRestoredDraft,
   applySheetRotation90CW,
   createUndoHistory,
   applyUndoEntry,
   computePlanViewRotationDeg,
   resolvePlanTabHitAction,
   isWallSegmentLongEnoughOnScreen,
-  shouldCommitNorthHandleTurn,
   classifyContourTapProximity,
   applyOrthoSnapPoint,
   formatHouseTiltLine,
   detectExportPlatform,
   buildExportFilename,
-  validateNorthDegreeInput,
   canExportVastuMap,
   createDefaultLayers,
   restoreSavedLayers,
@@ -434,31 +434,20 @@ test('Пункт 1: отмена правки контура трогает ТО
   assert.deepEqual(restoredFromRotate.satSatPts, currentAfterNorth.satSatPts);
 });
 
-test('Пункт 2: в «Проверке «С»» точки «1» и «2» только для показа, «С» перехватывается раньше маркеров, а поворот экрана заморожен на всё время жеста', () => {
-  // 1) Стрелка «С» проверяется раньше любых маркеров стены даже при наложении в одну точку экрана
+test('Пункт 2: на шаге «2. Север» ручного поворота «С» нет, в «Проверке «С»» точки «1» и «2» только для показа, а поворот экрана заморожен на всё время жеста', () => {
+  // 1) Ни в каком режиме нет ручного поворота стрелки «С» (rotate-north удалён)
   assert.deepEqual(
     resolvePlanTabHitAction({
-      hitNorthHandle: true,
-      satViewMode: 'plan-pick',
-      hitPlanWallPointIndex: 0,
+      satViewMode: 'idle',
+      hitPlanWallPointIndex: -1,
     }),
-    { action: 'rotate-north', pointIndex: -1 },
-    'Стрелка «С» имеет приоритет над точками стены'
-  );
-  assert.deepEqual(
-    resolvePlanTabHitAction({
-      hitNorthHandle: true,
-      satViewMode: 'done',
-      hitPlanWallPointIndex: 1,
-    }),
-    { action: 'rotate-north', pointIndex: -1 }
+    { action: 'pan-or-tap', pointIndex: -1 }
   );
 
   // 2) В виде «Проверка «С»» (satViewMode === 'done', план повёрнут севером вверх) точки «1» и «2» ТОЛЬКО для показа:
   //    касание по ним НЕ запускает перетаскивание и не уводит Север!
   assert.deepEqual(
     resolvePlanTabHitAction({
-      hitNorthHandle: false,
       satViewMode: 'done',
       hitPlanWallPointIndex: 0,
     }),
@@ -466,10 +455,9 @@ test('Пункт 2: в «Проверке «С»» точки «1» и «2» т�
     'В виде Проверка «С» точки 1 и 2 не перетаскиваются'
   );
 
-  // 3) Во вкладке «2. На плане» (satViewMode === 'plan-pick') лист НЕ повёрнут (0°), и точки «1» и «2» доступны для поправки
+  // 3) На этапе отметки на плане (satViewMode === 'plan-pick') лист НЕ повёрнут (0°), и точки «1» и «2» доступны для поправки
   assert.deepEqual(
     resolvePlanTabHitAction({
-      hitNorthHandle: false,
       satViewMode: 'plan-pick',
       hitPlanWallPointIndex: 1,
     }),
@@ -477,7 +465,7 @@ test('Пункт 2: в «Проверке «С»» точки «1» и «2» т�
   );
   approxEqual(
     computePlanViewRotationDeg({
-      activeTab: 'plan',
+      activeTab: 'north',
       satViewMode: 'plan-pick',
       northSet: true,
       northAngleDeg: 62,
@@ -486,14 +474,13 @@ test('Пункт 2: в «Проверке «С»» точки «1» и «2» т�
     }),
     0,
     1e-9,
-    'Во вкладке «2. На плане» лист не повёрнут'
+    'При отметке точек на плане лист не повёрнут'
   );
 
-  // 4) Во время любого жеста перетаскивания поворот экрана заморожен (frozenRotationDeg = -62°),
-  //    поэтому при вращении «С» с 62° на 95° план не крутится под пальцем до отпускания!
+  // 4) Во время любого жеста перетаскивания поворот экрана заморожен (frozenRotationDeg = -62°)
   approxEqual(
     computePlanViewRotationDeg({
-      activeTab: 'plan',
+      activeTab: 'north',
       satViewMode: 'done',
       northSet: true,
       northAngleDeg: 95,
@@ -506,7 +493,7 @@ test('Пункт 2: в «Проверке «С»» точки «1» и «2» т�
   );
   approxEqual(
     computePlanViewRotationDeg({
-      activeTab: 'plan',
+      activeTab: 'north',
       satViewMode: 'done',
       northSet: true,
       northAngleDeg: 95,
@@ -519,7 +506,7 @@ test('Пункт 2: в «Проверке «С»» точки «1» и «2» т�
   );
 });
 
-test('Пункты 3, 7, 8: минимальная длина стены 100 px, порог поворота стрелки «С» (> 3°) и разделение Android / iPhone при сохранении', () => {
+test('Пункты 3 и 7: минимальная длина стены 100 px и разделение Android / iPhone при сохранении', () => {
   // Пункт 3: отрезок стены короче 100 экранных px отклоняется и на спутнике, и на плане
   assert.equal(MIN_WALL_SEGMENT_SCREEN_PX, 100);
   assert.equal(
@@ -541,29 +528,6 @@ test('Пункты 3, 7, 8: минимальная длина стены 100 px,
     isWallSegmentLongEnoughOnScreen({ x: 50, y: 60 }, { x: 170, y: 140 }),
     true,
     'Стена ~144 px принимается'
-  );
-
-  // Пункт 8: касание «С» без заданного Севера не задаёт Север около 0°, нужен поворот > 3°
-  assert.equal(MIN_NORTH_HANDLE_TURN_DEG, 3);
-  assert.equal(
-    shouldCommitNorthHandleTurn({ wasNorthSet: false, maxAbsDeltaDeg: 0 }),
-    false,
-    'Простое касание «С» без поворота не задаёт Север'
-  );
-  assert.equal(
-    shouldCommitNorthHandleTurn({ wasNorthSet: false, maxAbsDeltaDeg: 2.8 }),
-    false,
-    'Дрожание пальца на 2.8° не задаёт Север'
-  );
-  assert.equal(
-    shouldCommitNorthHandleTurn({ wasNorthSet: false, maxAbsDeltaDeg: 3.2 }),
-    true,
-    'Настоящий поворот стрелки на 3.2° (> 3°) задаёт Север'
-  );
-  assert.equal(
-    shouldCommitNorthHandleTurn({ wasNorthSet: true, maxAbsDeltaDeg: 1.0 }),
-    true,
-    'Если Север уже был задан, тонкая подстройка на 1° сохраняется'
   );
 
   // Пункт 7: Android скачивает файл по «Скачать карту», iPhone открывает системное меню «Поделиться»
@@ -684,7 +648,7 @@ test('Пункт 9: короткие стены и квартира с лодж�
   assert.equal(loggiaMap.padaGrid.padas.length, 32);
 });
 
-test('Имя файла сохранения, валидация поля градусов 0–360 и запрет сохранения без контура или Севера', () => {
+test('Имя файла сохранения и запрет сохранения без контура или Севера по спутнику', () => {
   assert.equal(
     buildExportFilename(new Date(2026, 10, 15)),
     'karta-kvartiry-2026-11-15.png'
@@ -693,14 +657,6 @@ test('Имя файла сохранения, валидация поля гра
     buildExportFilename(new Date(2026, 2, 5)),
     'karta-kvartiry-2026-03-05.png'
   );
-
-  assert.equal(validateNorthDegreeInput('0').ok, true);
-  assert.equal(validateNorthDegreeInput('360').ok, true);
-  assert.equal(validateNorthDegreeInput('22,5').value, 22.5);
-  assert.equal(validateNorthDegreeInput('-5').ok, false);
-  assert.equal(validateNorthDegreeInput('360.5').ok, false);
-  assert.equal(validateNorthDegreeInput('420').ok, false);
-  assert.equal(validateNorthDegreeInput('12e2').ok, false);
 
   const validVertices = [
     { x: 0, y: 0 },
@@ -724,6 +680,19 @@ test('Имя файла сохранения, валидация поля гра
     canExportVastuMap({
       planCanvas: {},
       northSet: true,
+      northSource: 'manual',
+      northAngleDeg: 40,
+      vertices: validVertices,
+      vastuMap: map,
+    }),
+    false,
+    'Ручной источник Севера не допускается к экспорту'
+  );
+  assert.equal(
+    canExportVastuMap({
+      planCanvas: {},
+      northSet: true,
+      northSource: 'satellite',
       northAngleDeg: 40,
       vertices: validVertices.slice(0, 2),
       vastuMap: null,
@@ -734,6 +703,7 @@ test('Имя файла сохранения, валидация поля гра
     canExportVastuMap({
       planCanvas: {},
       northSet: true,
+      northSource: 'satellite',
       northAngleDeg: 40,
       vertices: validVertices,
       vastuMap: map,
@@ -965,4 +935,228 @@ test('Задача 19 (п. 2): концы 8 осей (С, СВ, В, ЮВ, Ю, Ю
     );
     approxEqual(signedAngleDeltaDeg(normalizeDeg(18 + axis.azimuthDeg), endAz), 0, 1e-6);
   }
+});
+
+test('Задача 20 (п. 1): порядок 4 шагов — без плана шаги 2–4 недоступны с подписью «сначала шаг 1», завершённые шаги отмечаются галочкой', () => {
+  // 1) Пока плана нет (planCanvas === null), активен строго «1. План», а шаги 2–4 недоступны
+  const noPlan = computeStepsState({
+    planCanvas: null,
+    activeTab: 'layers',
+    northSet: false,
+    vertices: [],
+  });
+  assert.equal(noPlan.hasPlan, false);
+  assert.equal(noPlan.activeTab, 'plan', 'Без плана нельзя уйти со вкладки 1. План');
+  assert.equal(noPlan.isPointPicking, false);
+  assert.equal(noPlan.steps.length, 4);
+  assert.deepEqual(
+    noPlan.steps.map((s) => s.baseTitle),
+    ['1. План', '2. Север', '3. Контур стен', '4. Карта']
+  );
+
+  assert.equal(noPlan.steps[0].disabled, false);
+  assert.equal(noPlan.steps[0].active, true);
+  assert.equal(noPlan.steps[0].completed, false);
+  assert.equal(noPlan.steps[0].displayTitle, '1. План');
+
+  for (const idx of [1, 2, 3]) {
+    assert.equal(
+      noPlan.steps[idx].disabled,
+      true,
+      `Шаг ${idx + 1} (${noPlan.steps[idx].baseTitle}) должен быть недоступен без плана`
+    );
+    assert.equal(noPlan.steps[idx].lockedCaption, STEP_LOCKED_CAPTION);
+    assert.equal(noPlan.steps[idx].lockedCaption, 'сначала шаг 1');
+  }
+
+  // 2) Проверяем начальную разметку index.html: 4 пронумерованные вкладки, шаги 2–4 заблокированы (disabled) и содержат «сначала шаг 1»
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  assert.match(html, /1\.\s*План/);
+  assert.match(html, /2\.\s*Север/);
+  assert.match(html, /3\.\s*Контур стен/);
+  assert.match(html, /4\.\s*Карта/);
+  assert.match(html, /Откройте план квартиры/);
+
+  for (const btnId of ['tabBtnNorth', 'tabBtnContour', 'tabBtnLayers']) {
+    const tagMatch = html.match(new RegExp(`<button[^>]*id="${btnId}"[^>]*>`));
+    assert.ok(tagMatch, `В разметке присутствует кнопка вкладки #${btnId}`);
+    assert.equal(
+      /\bdisabled\b/i.test(tagMatch[0]),
+      true,
+      `В начальной разметке #${btnId} заблокирована (disabled) до загрузки плана`
+    );
+  }
+  assert.match(html, /сначала шаг 1/);
+
+  // 3) После загрузки плана шаги 2–4 открываются, а выполненные шаги получают галочку «✓»
+  const quad = [
+    { x: 0, y: 0 },
+    { x: 300, y: 0 },
+    { x: 300, y: 200 },
+    { x: 0, y: 200 },
+  ];
+  const readyMap = buildVastuMap(quad, 338);
+  const allReady = computeStepsState({
+    planCanvas: {},
+    activeTab: 'layers',
+    northSet: true,
+    northSource: 'satellite',
+    northAngleDeg: 338,
+    vertices: quad,
+    vastuMap: readyMap,
+    mapExported: true,
+  });
+
+  assert.equal(allReady.steps.every((s) => !s.disabled), true);
+  assert.equal(allReady.steps.every((s) => s.lockedCaption === ''), true);
+  assert.deepEqual(
+    allReady.steps.map((s) => s.displayTitle),
+    ['✓ 1. План', '✓ 2. Север', '✓ 3. Контур стен', '✓ 4. Карта']
+  );
+
+  // 4) Режим крупного окна постановки точек (isPointPicking) включается при отметке точек на спутнике, на плане и на контуре
+  assert.equal(
+    computeStepsState({
+      planCanvas: {},
+      activeTab: 'north',
+      satViewMode: 'plan-pick',
+    }).isPointPicking,
+    true
+  );
+  assert.equal(
+    computeStepsState({
+      planCanvas: {},
+      activeTab: 'contour',
+      satViewMode: 'done',
+    }).isPointPicking,
+    true
+  );
+  assert.equal(
+    computeStepsState({
+      planCanvas: {},
+      activeTab: 'north',
+      satViewMode: 'done',
+      northSet: true,
+      northSource: 'satellite',
+      northAngleDeg: 22,
+    }).isPointPicking,
+    false
+  );
+});
+
+test('Задача 20 (п. 3а): блок «Запасной способ» и ручной ввод/поворот Севера полностью удалены из разметки и кода', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(repoRoot, 'src', 'app.js'), 'utf8');
+  const helpersJs = fs.readFileSync(path.join(repoRoot, 'src', 'state-helpers.js'), 'utf8');
+  const rendererJs = fs.readFileSync(path.join(repoRoot, 'src', 'renderer.js'), 'utf8');
+
+  // В HTML нет заголовка «Запасной способ», бегунка, поля градусов и кнопок 0/90/180/270°
+  assert.equal(/Запасной способ/i.test(html), false, 'В разметке нет блока «Запасной способ»');
+  assert.equal(/id="northSlider"/.test(html), false, 'Нет бегунка градусов Севера');
+  assert.equal(/id="northNumberInput"/.test(html), false, 'Нет поля ввода градусов Севера');
+  assert.equal(/data-north=/.test(html), false, 'Нет быстрых кнопок градусов Севера');
+  assert.equal(/Сверху 0°|Справа 90°|Снизу 180°|Слева 270°/.test(html), false);
+  assert.equal(
+    /поверните стрелку «С»|подправить пальцем на чертеже|градусами ниже/i.test(html),
+    false,
+    'В подсказках нет предложения крутить стрелку «С» вручную или вводить градусы'
+  );
+
+  // Проверка «С» после расчёта по спутнику остаётся в разметке
+  assert.match(html, /Проверьте направление «С» на плане/);
+
+  // В JS-коде удалены обработчики запасного способа и ручного вращения стрелки «С»
+  for (const [name, src] of [
+    ['src/app.js', appJs],
+    ['src/state-helpers.js', helpersJs],
+    ['src/renderer.js', rendererJs],
+  ]) {
+    assert.equal(/northSlider|northNumberInput|data-north/.test(src), false, `${name}: нет элементов запасного способа`);
+    assert.equal(/rotate-north|hitTestNorthHandle|validateNorthDegreeInput/.test(src), false, `${name}: нет ручного поворота/ввода Севера`);
+  }
+});
+
+test('Задача 20 (п. 3б): старый черновик с «ручным» Севером открывается без ошибок, сохраняет контур и просит задать Север по спутнику', () => {
+  const savedCorners = [
+    { x: 120, y: 100 },
+    { x: 640, y: 100 },
+    { x: 640, y: 380 },
+    { x: 880, y: 380 },
+    { x: 880, y: 720 },
+    { x: 120, y: 720 },
+  ];
+
+  // 1) Старый черновик до Задачи 20 (version: 2, без поля northSource, Север = 90° задан вручную)
+  const legacyManualDraft = {
+    version: 2,
+    savedAt: 1700000000000,
+    isSamplePlan: false,
+    planTitle: 'План БТИ 2-комн.jpg',
+    sheetQuarterTurns: 1,
+    basePlanWidth: 1200,
+    basePlanHeight: 900,
+    basePlanDataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+    vertices: savedCorners,
+    northSet: true,
+    northAngleDeg: 90,
+    alignNorthUp: true,
+    orthoSnap: false,
+    activeTab: 'layers',
+    layers: { showSectorLabels: true, showPadas: true },
+  };
+
+  const restoredLegacy = normalizeRestoredDraft(legacyManualDraft);
+  assert.equal(restoredLegacy.hasDraft, true, 'Старый черновик успешно распознан без ошибок');
+  assert.equal(restoredLegacy.planTitle, 'План БТИ 2-комн.jpg');
+  assert.equal(restoredLegacy.sheetQuarterTurns, 1);
+  assert.deepEqual(restoredLegacy.vertices, savedCorners, 'Контур стен ученицы полностью сохранён');
+  assert.equal(restoredLegacy.layers.showSectorLabels, true);
+  assert.equal(restoredLegacy.layers.showPadas, true);
+  assert.equal(restoredLegacy.northSet, false, 'Ручной Север сброшен — требуется расчёт по спутнику');
+  assert.equal(restoredLegacy.northSource, null);
+  assert.equal(restoredLegacy.northAngleDeg, null);
+  assert.equal(
+    restoredLegacy.needsSatelliteNorthPrompt,
+    true,
+    'Включено уведомление с просьбой задать Север по спутнику'
+  );
+  assert.equal(
+    restoredLegacy.activeTab,
+    'north',
+    'Ученица сразу переведена на шаг «2. Север» для привязки по спутнику'
+  );
+
+  // 2) Старый черновик с явным northSource: 'manual' также сбрасывает Север и просит спутник
+  const explicitManualDraft = normalizeRestoredDraft({
+    ...legacyManualDraft,
+    northSource: 'manual',
+    northAngleDeg: 270,
+  });
+  assert.equal(explicitManualDraft.northSet, false);
+  assert.equal(explicitManualDraft.needsSatelliteNorthPrompt, true);
+  assert.equal(explicitManualDraft.activeTab, 'north');
+
+  // 3) Новый черновик, где Север был рассчитан по спутнику (northSource: 'satellite'), сохраняет Север
+  const satelliteDraft = normalizeRestoredDraft({
+    ...legacyManualDraft,
+    northSet: true,
+    northSource: 'satellite',
+    northAngleDeg: 338,
+    satPlanPts: [
+      { x: 120, y: 100 },
+      { x: 640, y: 100 },
+    ],
+    satHouseTiltDeg: 22,
+    activeTab: 'layers',
+  });
+  assert.equal(satelliteDraft.hasDraft, true);
+  assert.equal(satelliteDraft.northSet, true);
+  assert.equal(satelliteDraft.northSource, 'satellite');
+  approxEqual(satelliteDraft.northAngleDeg, 338, 1e-9);
+  assert.equal(satelliteDraft.needsSatelliteNorthPrompt, false);
+  assert.equal(satelliteDraft.activeTab, 'layers');
+  assert.equal(satelliteDraft.satPlanPts.length, 2);
+  approxEqual(satelliteDraft.satHouseTiltDeg, 22, 1e-9);
 });

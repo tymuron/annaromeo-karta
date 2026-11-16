@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="./styles/main.css" />
 </head>
 <body>
-  <div class="studio-shell" id="studioShell">
+  <div class="studio-shell is-empty-plan" id="studioShell">
     <!-- Верхняя бордовая шапка бренда Анны Ромео -->
     <header class="topbar">
       <div class="brand-lockup">
@@ -24,44 +24,48 @@
       </div>
 
       <div class="topbar-actions">
-        <label class="btn-burgundy-ghost file-trigger" for="planFileInput" title="Открыть файл плана квартиры (JPG, PNG, PDF)">
-          Открыть план
-        </label>
         <input
           type="file"
           id="planFileInput"
           accept="image/png,image/jpeg,image/webp,application/pdf,.pdf"
           hidden
         />
-        <button type="button" class="btn-burgundy-gold" id="topExportBtn">
+        <input
+          type="file"
+          id="satFileInput"
+          accept="image/png,image/jpeg,image/webp"
+          hidden
+        />
+        <button type="button" class="btn-burgundy-gold" id="topExportBtn" hidden disabled>
           Скачать карту
         </button>
       </div>
     </header>
 
-    <!-- Рабочее пространство: интерактивный чертёж и инструментальная панель -->
+    <!-- Рабочее пространство: интерактивный чертёж и пошаговая панель -->
     <main class="workspace">
       <!-- Область чертежа -->
       <section class="canvas-stage" id="canvasStage" aria-label="Чертёж Васту-карты">
         <canvas id="mapCanvas"></canvas>
 
         <!-- Живая строка подсказки поверх холста -->
-        <div class="canvas-hud-top">
+        <div class="canvas-hud-top" id="canvasHudTop" hidden>
           <div class="status-banner" id="canvasStatusBanner">
-            Север сверху · 8 секторов и Брахмастан по форме квартиры
+            Шаг 1: откройте план квартиры
           </div>
           <button
             type="button"
             class="hud-btn mobile-only"
             id="toggleCanvasSizeBtn"
             title="Развернуть или свернуть область чертежа"
+            hidden
           >
             Крупнее
           </button>
         </div>
 
         <!-- Плавающие кнопки масштаба -->
-        <div class="canvas-controls" role="group" aria-label="Масштаб чертежа">
+        <div class="canvas-controls" id="canvasZoomControls" role="group" aria-label="Масштаб чертежа" hidden>
           <button type="button" class="hud-icon-btn" id="zoomInBtn" aria-label="Увеличить план" title="Увеличить план">+</button>
           <button type="button" class="hud-icon-btn" id="zoomOutBtn" aria-label="Уменьшить план" title="Уменьшить план">−</button>
           <button type="button" class="hud-icon-btn hud-text-btn" id="zoomFitBtn" title="Вписать в экран">Вписать</button>
@@ -74,19 +78,33 @@
         </div>
       </section>
 
-      <!-- Панель инструментов -->
-      <aside class="inspector-panel" aria-label="Инструменты построения карты">
-        <nav class="mode-tabs" role="tablist" aria-label="Разделы конструктора">
+      <!-- Панель шагов 1 -> 2 -> 3 -> 4 -->
+      <aside class="inspector-panel" aria-label="Шаги построения карты">
+        <nav class="mode-tabs" role="tablist" aria-label="Шаги конструктора">
+          <button
+            type="button"
+            role="tab"
+            class="mode-tab is-active"
+            id="tabBtnPlan"
+            data-tab="plan"
+            aria-selected="true"
+            aria-controls="panelPlan"
+          >
+            <span class="mode-tab-title">1. План</span>
+            <span class="mode-tab-sub" hidden></span>
+          </button>
           <button
             type="button"
             role="tab"
             class="mode-tab"
-            id="tabBtnPlan"
-            data-tab="plan"
+            id="tabBtnNorth"
+            data-tab="north"
             aria-selected="false"
-            aria-controls="panelPlan"
+            aria-controls="panelNorth"
+            disabled
           >
-            План и север
+            <span class="mode-tab-title">2. Север</span>
+            <span class="mode-tab-sub">сначала шаг 1</span>
           </button>
           <button
             type="button"
@@ -96,65 +114,94 @@
             data-tab="contour"
             aria-selected="false"
             aria-controls="panelContour"
+            disabled
           >
-            Контур стен
+            <span class="mode-tab-title">3. Контур стен</span>
+            <span class="mode-tab-sub">сначала шаг 1</span>
           </button>
           <button
             type="button"
             role="tab"
-            class="mode-tab is-active"
+            class="mode-tab"
             id="tabBtnLayers"
             data-tab="layers"
-            aria-selected="true"
+            aria-selected="false"
             aria-controls="panelLayers"
+            disabled
           >
-            Что показать на карте
+            <span class="mode-tab-title">4. Карта</span>
+            <span class="mode-tab-sub">сначала шаг 1</span>
           </button>
         </nav>
 
+        <!-- Компактная однострочная панель на телефоне во время постановки точек (75–84% экрана отдано плану) -->
+        <div class="mobile-picking-bar" id="mobilePickingBar" hidden>
+          <span class="picking-bar-hint" id="pickingBarHint">Коснитесь точки «1»</span>
+          <div class="picking-bar-actions">
+            <button type="button" class="btn-outline btn-picking" id="pickingUndoBtn">
+              Отменить
+            </button>
+            <button type="button" class="btn-primary-dark btn-picking" id="pickingDoneBtn" disabled>
+              Готово
+            </button>
+          </div>
+        </div>
+
         <div class="inspector-scroll" id="inspectorScroll">
-          <!-- ВКЛАДКА: ПЛАН И СЕВЕР -->
-          <section class="tab-pane" id="panelPlan" role="tabpanel" aria-labelledby="tabBtnPlan" hidden>
-            <div class="panel-block">
-              <h2 class="block-heading">План квартиры</h2>
+          <!-- ШАГ 1: 1. ПЛАН -->
+          <section class="tab-pane is-active" id="panelPlan" role="tabpanel" aria-labelledby="tabBtnPlan">
+            <!-- Пока плана нет: одна крупная кнопка -->
+            <div class="panel-block" id="planEmptyState">
+              <h2 class="block-heading">Шаг 1. Откройте план квартиры</h2>
               <p class="block-lead">
                 Возьмите планировку от застройщика, лист БТИ или ровное фото чертежа сверху — подойдут картинки JPG, PNG и файлы PDF.
               </p>
 
-              <div class="button-row">
-                <label class="btn-primary-dark file-trigger" for="planFileInput">
-                  Выбрать файл плана
-                </label>
-                <button type="button" class="btn-outline" id="rotatePlan90Btn">
-                  Повернуть лист на 90°
-                </button>
-              </div>
-
-              <p class="inline-hint" id="rotateSheetHint" hidden>
-                Карта уже развёрнута Севером вверх — поворот листа виден в режиме «Как на листе плана» и на шаге «2. На плане».
-              </p>
-
-              <div class="warning-box" id="planErrorBox" hidden></div>
-
-              <div class="secondary-row">
-                <span class="current-file-label" id="currentPlanTitle">Учебный план (Г-образная квартира)</span>
-                <button type="button" class="link-action" id="loadSampleBtn">
-                  Вернуть учебный план
-                </button>
-              </div>
+              <label class="btn-primary-dark btn-hero btn-full file-trigger" for="planFileInput" id="openPlanHeroBtn">
+                Откройте план квартиры
+              </label>
 
               <p class="privacy-note">
                 Ваш план видите только вы: карта строится прямо в этом окне браузера.
               </p>
             </div>
 
-            <!-- ОСНОВНОЙ СПОСОБ: СЕВЕР ПО СПУТНИКУ -->
-            <div class="panel-block">
-              <div class="heading-with-value">
-                <h2 class="block-heading">Север по спутнику</h2>
-                <span class="north-readout" id="northReadoutBadge">22°</span>
+            <!-- Когда план уже загружен (если ученица вернулась на шаг 1) -->
+            <div class="panel-block" id="planLoadedState" hidden>
+              <h2 class="block-heading">1. План квартиры загружен</h2>
+              <p class="current-file-banner" id="currentPlanTitle">План квартиры</p>
+
+              <button type="button" class="btn-primary-dark btn-hero btn-full" id="planNextStepBtn">
+                Далее: 2. Север по спутнику →
+              </button>
+
+              <div class="button-row secondary-actions-mt">
+                <button type="button" class="btn-outline" id="rotatePlan90Btn">
+                  Повернуть лист на 90°
+                </button>
+                <label class="btn-outline file-trigger" for="planFileInput">
+                  Другой план
+                </label>
               </div>
 
+              <p class="inline-hint" id="rotateSheetHint" hidden>
+                Карта уже развёрнута Севером вверх — поворот листа виден в режиме «Как на листе плана» и при отметке точек на плане.
+              </p>
+            </div>
+
+            <div class="warning-box" id="planErrorBox" hidden></div>
+          </section>
+
+          <!-- ШАГ 2: 2. СЕВЕР (ТОЛЬКО ПО СПУТНИКУ) -->
+          <section class="tab-pane" id="panelNorth" role="tabpanel" aria-labelledby="tabBtnNorth" hidden>
+            <!-- Уведомление для старых черновиков, где Север раньше задавался вручную -->
+            <div class="inline-info-note legacy-north-note" id="legacyNorthNoticeBox" hidden>
+              <strong>Задайте Север по спутнику:</strong> в сохранённом черновике Север не привязан к снимку со спутника. Загрузите скриншот дома из Яндекс Карт или Google Карт — контур вашей квартиры сохранён.
+            </div>
+
+            <!-- Подшаг 2.1: загрузить скриншот со спутника -->
+            <div class="panel-block" id="northSubUpload">
+              <h2 class="block-heading">Шаг 2. Север по спутнику</h2>
               <p class="small-copy">
                 Откройте дом в Яндекс Картах или Google Картах в режиме «Спутник», убедитесь, что север сверху (если карту вращали, нажмите значок «С» на карте), и сделайте скриншот. Снимок остаётся только на вашем устройстве.
               </p>
@@ -209,120 +256,97 @@
                 </svg>
               </figure>
 
-              <label class="btn-primary-dark btn-full file-trigger" for="satFileInput" id="satUploadBtnLabel">
+              <label class="btn-primary-dark btn-hero btn-full file-trigger" for="satFileInput" id="satUploadBtnLabel">
                 Загрузить скриншот со спутника
               </label>
-              <input
-                type="file"
-                id="satFileInput"
-                accept="image/png,image/jpeg,image/webp"
-                hidden
-              />
+            </div>
 
-              <!-- Панель пошаговой отметки точек 1 и 2 (открывается после выбора снимка спутника) -->
-              <div class="sat-stepper" id="satStepperBox" hidden>
-                <div class="segmented-switch" role="group" aria-label="Этап разметки по спутнику">
-                  <button type="button" class="seg-btn is-active" id="satStepSatBtn">
-                    1. На спутнике
-                  </button>
-                  <button type="button" class="seg-btn" id="satStepPlanBtn">
-                    2. На плане
-                  </button>
-                  <button type="button" class="seg-btn" id="satStepDoneBtn" disabled>
-                    Проверка «С»
-                  </button>
-                </div>
+            <!-- Подшаги 2.2 и 2.3: отметка точек 1 и 2 на снимке -> затем на плане (на телефоне свёрнуто в 1 строку) -->
+            <div class="panel-block" id="northSubPicking" hidden>
+              <div class="sat-stage-strip" aria-label="Порядок шага 2">
+                <span class="sat-stage-pill is-active" id="satStageSatPill">1. На снимке</span>
+                <span class="sat-stage-pill" id="satStagePlanPill">2. На плане</span>
+                <span class="sat-stage-pill" id="satStageVerifyPill">3. Проверка «С»</span>
+              </div>
 
-                <p class="sat-step-hint" id="satStepHintText">
-                  Разведите двумя пальцами, чтобы увеличить дом, и коснитесь двух углов одной наружной стены: сначала точки «1», затем точки «2».
-                </p>
+              <h2 class="block-heading" id="northPickingHeading">Отметьте точки 1 и 2 на снимке</h2>
+              <p class="sat-step-hint" id="satStepHintText">
+                Разведите двумя пальцами, чтобы увеличить дом, и коснитесь двух углов одной наружной стены: сначала точки «1», затем точки «2».
+              </p>
 
-                <div class="sat-actions-row">
-                  <button type="button" class="btn-outline btn-compact" id="satResetPointsBtn">
-                    Переставить точки
-                  </button>
-                  <label class="btn-outline btn-compact file-trigger" for="satFileInput">
-                    Другой снимок
-                  </label>
-                </div>
+              <div class="button-row">
+                <button type="button" class="btn-outline" id="satDesktopUndoBtn">
+                  Отменить
+                </button>
+                <button type="button" class="btn-primary-dark" id="satDesktopDoneBtn" disabled>
+                  Готово
+                </button>
+              </div>
+
+              <div class="secondary-row">
+                <label class="link-action file-trigger" for="satFileInput">
+                  Выбрать другой скриншот со спутника
+                </label>
+              </div>
+            </div>
+
+            <!-- Подшаг 2.4: проверка направления «С» после расчёта -->
+            <div class="panel-block" id="northSubVerify" hidden>
+              <div class="heading-with-value">
+                <h2 class="block-heading">Проверьте «С» на плане</h2>
+                <span class="north-readout" id="northReadoutBadge">—</span>
               </div>
 
               <!-- Угол поворота дома относительно сторон света (в пределах ±45°) -->
               <div class="sat-tilt-readout" id="satHouseTiltLine" hidden></div>
 
               <!-- Блок проверки после расчёта Севера по спутнику -->
-              <div class="sat-verify-note" id="satVerifyBox" hidden>
-                <strong>Проверьте направление «С» на плане:</strong> окна вашей стены «1 → 2» смотрят в ту же сторону, что и на снимке. При необходимости стрелку «С» можно чуть подправить пальцем на чертеже или градусами ниже.
-              </div>
-            </div>
-
-            <!-- ЗАПАСНОЙ СПОСОБ: ГРАДУСЫ ВРУЧНУЮ ИЛИ ПОВОРОТ СТРЕЛКИ -->
-            <div class="panel-block subtle-card">
-              <h3 class="sub-heading">Запасной способ</h3>
-              <p class="small-copy">
-                Если знаете, куда на листе смотрит Север, введите градусы по часовой стрелке от верха листа или поверните стрелку «С» прямо на плане.
-              </p>
-
-              <label class="field-label" for="northNumberInput">
-                Север на плане: градусов по часовой стрелке от верха листа
-              </label>
-
-              <div class="north-input-row">
-                <input
-                  type="range"
-                  id="northSlider"
-                  min="0"
-                  max="360"
-                  step="1"
-                  value="22"
-                  aria-label="Север на плане в градусах по часовой стрелке от верха листа"
-                />
-                <div class="degree-box">
-                  <input
-                    type="number"
-                    id="northNumberInput"
-                    min="0"
-                    max="360"
-                    step="0.5"
-                    inputmode="decimal"
-                    value="22"
-                    placeholder="—"
-                    aria-label="Север на плане, градусов от 0 до 360"
-                  />
-                  <span>°</span>
-                </div>
+              <div class="sat-verify-note" id="satVerifyBox">
+                <strong>Проверьте направление «С» на плане:</strong> окна вашей стены «1 → 2» смотрят в ту же сторону, что и на снимке спутника.
               </div>
 
-              <div class="quick-angles" role="group" aria-label="Быстрый выбор стороны на плане">
-                <button type="button" class="chip-btn" data-north="0">Сверху 0°</button>
-                <button type="button" class="chip-btn" data-north="90">Справа 90°</button>
-                <button type="button" class="chip-btn" data-north="180">Снизу 180°</button>
-                <button type="button" class="chip-btn" data-north="270">Слева 270°</button>
+              <button type="button" class="btn-primary-dark btn-hero btn-full verify-next-btn" id="northNextContourBtn">
+                Далее: 3. Контур стен →
+              </button>
+
+              <div class="sat-actions-row secondary-actions-mt">
+                <button type="button" class="btn-outline btn-compact" id="satResetPointsBtn">
+                  Переставить точки
+                </button>
+                <label class="btn-outline btn-compact file-trigger" for="satFileInput">
+                  Другой снимок
+                </label>
               </div>
             </div>
           </section>
 
-          <!-- ВКЛАДКА: КОНТУР СТЕН -->
+          <!-- ШАГ 3: 3. КОНТУР СТЕН (на телефоне свёрнуто в 1 строку во время постановки углов) -->
           <section class="tab-pane" id="panelContour" role="tabpanel" aria-labelledby="tabBtnContour" hidden>
             <div class="panel-block">
               <div class="heading-with-value">
-                <h2 class="block-heading">Контур квартиры</h2>
-                <span class="vertex-count-badge" id="vertexCountBadge">6 углов</span>
+                <h2 class="block-heading">Шаг 3. Контур стен</h2>
+                <span class="vertex-count-badge" id="vertexCountBadge">0 углов</span>
               </div>
 
               <p class="block-lead">
                 Отмечайте внутренние углы квартиры касаниями по порядку — от 3 точек контур замкнётся сам, а центр рассчитается по настоящей форме квартиры.
               </p>
 
-              <div class="contour-toolbar">
+              <div class="button-row contour-primary-row">
                 <button type="button" class="btn-outline" id="undoContourBtn" disabled>
                   Отменить
                 </button>
-                <button type="button" class="btn-outline" id="deleteVertexBtn">
+                <button type="button" class="btn-primary-dark" id="contourDoneBtn" disabled>
+                  Готово
+                </button>
+              </div>
+
+              <div class="button-row secondary-actions-mt">
+                <button type="button" class="btn-outline btn-compact" id="deleteVertexBtn" disabled>
                   Удалить угол
                 </button>
-                <button type="button" class="btn-outline danger-outline" id="clearContourBtn">
-                  Очистить
+                <button type="button" class="btn-outline btn-compact danger-outline" id="clearContourBtn" disabled>
+                  Очистить всё
                 </button>
               </div>
 
@@ -349,28 +373,28 @@
             </div>
           </section>
 
-          <!-- ВКЛАДКА: ЧТО ПОКАЗАТЬ НА КАРТЕ -->
-          <section class="tab-pane is-active" id="panelLayers" role="tabpanel" aria-labelledby="tabBtnLayers">
-            <!-- Подсказка, если Север ещё не задан или контур не замкнут -->
-            <div class="panel-block subtle-card" id="layersBlockedBox" hidden>
+          <!-- ШАГ 4: 4. КАРТА -->
+          <section class="tab-pane" id="panelLayers" role="tabpanel" aria-labelledby="tabBtnLayers" hidden>
+            <!-- Подсказка с ОДНОЙ кнопкой, если Север ещё не задан или контур не замкнут -->
+            <div class="panel-block subtle-card" id="layersBlockedBox">
               <h2 class="block-heading">Что осталось сделать</h2>
               <p class="small-copy" id="layersBlockedText">
-                Чтобы построить сектора, сетку пад и скачать карту, сначала укажите Север и обведите контур квартиры.
+                Чтобы построить сектора, сетку пад и скачать карту, сначала укажите Север по спутнику и обведите контур стен.
               </p>
               <div class="blocked-steps-actions">
-                <button type="button" class="btn-primary-dark btn-full" id="gotoNorthStepBtn">
-                  Указать Север по спутнику
+                <button type="button" class="btn-primary-dark btn-hero btn-full" id="gotoNorthStepBtn">
+                  Перейти к шагу 2: Север по спутнику
                 </button>
-                <button type="button" class="btn-outline btn-full" id="gotoContourStepBtn">
-                  Обвести контур стен
+                <button type="button" class="btn-primary-dark btn-hero btn-full" id="gotoContourStepBtn" hidden>
+                  Перейти к шагу 3: Контур стен
                 </button>
               </div>
             </div>
 
-            <!-- Готовое управление картой (показывается только при заданном Севере и замкнутом контуре) -->
-            <div id="layersReadyContent">
+            <!-- Готовое управление картой (показывается только при заданном по спутнику Севере и замкнутом контуре) -->
+            <div id="layersReadyContent" hidden>
               <div class="panel-block">
-                <h2 class="block-heading">Что показать на карте</h2>
+                <h2 class="block-heading">Шаг 4. Что показать на карте</h2>
 
                 <div class="layer-switches">
                   <label class="check-row layer-switch">
@@ -435,10 +459,10 @@
                 </div>
 
                 <div class="export-cta-wrap">
-                  <button type="button" class="btn-primary-dark" id="exportPngBtn">
+                  <button type="button" class="btn-primary-dark btn-hero" id="exportPngBtn">
                     Скачать карту
                   </button>
-                  <button type="button" class="btn-outline" id="shareMapBtn">
+                  <button type="button" class="btn-outline btn-hero" id="shareMapBtn">
                     Поделиться
                   </button>
                 </div>

@@ -314,7 +314,7 @@ export function renderScene(ctx, state, options = {}) {
 
   if (
     !isExport &&
-    state.activeTab === 'plan' &&
+    (state.activeTab === 'north' || state.activeTab === 'plan') &&
     state.satViewMode === 'sat' &&
     state.sat &&
     state.sat.canvas
@@ -356,7 +356,10 @@ export function renderScene(ctx, state, options = {}) {
   } = layers;
 
   const hasValidNorth = Boolean(northSet && Number.isFinite(northAngleDeg));
-  const isPickingPlanWall = !isExport && activeTab === 'plan' && satViewMode === 'plan-pick';
+  const isPickingPlanWall =
+    !isExport &&
+    (activeTab === 'north' || activeTab === 'plan') &&
+    satViewMode === 'plan-pick';
 
   const rotationDeg = computePlanViewRotationDeg({
     isExport,
@@ -386,7 +389,7 @@ export function renderScene(ctx, state, options = {}) {
   ctx.fillStyle = backgroundColor;
   ctx.fillRect(0, 0, viewWidth, viewHeight);
 
-  if (!isExport) {
+  if (!isExport && planCanvas) {
     // Деликатный водяной знак бренда на бордовом фоне (~4.5% прозрачности)
     ctx.save();
     ctx.fillStyle = 'rgba(202, 188, 144, 0.045)';
@@ -398,6 +401,30 @@ export function renderScene(ctx, state, options = {}) {
   }
 
   if (!planCanvas) {
+    if (!isExport) {
+      ctx.save();
+      const cardW = Math.min(viewWidth - 36, 360);
+      const cardH = Math.min(viewHeight - 28, 128);
+      if (cardW >= 180 && cardH >= 74) {
+        const cx0 = (viewWidth - cardW) * 0.5;
+        const cy0 = (viewHeight - cardH) * 0.5;
+        ctx.fillStyle = 'rgba(66, 35, 38, 0.52)';
+        ctx.fillRect(cx0, cy0, cardW, cardH);
+        ctx.strokeStyle = 'rgba(202, 188, 144, 0.36)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cx0, cy0, cardW, cardH);
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#CABC90';
+        ctx.font = '600 11px Manrope, sans-serif';
+        ctx.fillText('ШАГ 1 ИЗ 4', viewWidth * 0.5, cy0 + cardH * 0.32);
+
+        ctx.font = 'italic 600 22px Cormorant, Georgia, serif';
+        ctx.fillText('План квартиры', viewWidth * 0.5, cy0 + cardH * 0.62);
+      }
+      ctx.restore();
+    }
     ctx.restore();
     return {
       transform: xf,
@@ -430,7 +457,8 @@ export function renderScene(ctx, state, options = {}) {
   ctx.drawImage(planCanvas, 0, 0, planWidth, planHeight);
 
   const hasClosedContour = vertices.length >= 3 && vastuMap && !vastuMap.selfIntersects;
-  const canShowMapLayers = hasClosedContour && hasValidNorth;
+  const canShowMapLayers =
+    (isExport || activeTab === 'layers') && hasClosedContour && hasValidNorth;
   const contourPath = hasClosedContour ? buildPolygonPath2D(vastuMap.vertices) : null;
 
   // 3. СЛОЙ 1: 8 радиальных секторов по С. А. Балуте и палитре Анны Ромео (только когда Север задан)
@@ -631,12 +659,11 @@ export function renderScene(ctx, state, options = {}) {
     return false;
   }
 
-  // 7.0. Опорные точки «1» и «2» стены на плане (во вкладке «План и север»; в «Проверка С» — только для показа)
+  // 7.0. Опорные точки «1» и «2» стены на плане (во вкладке «2. Север»; в «Проверка С» — только для показа)
   if (
     !isExport &&
-    activeTab === 'plan' &&
+    (activeTab === 'north' || activeTab === 'plan') &&
     sat &&
-    sat.canvas &&
     (satViewMode === 'plan-pick' || satViewMode === 'done') &&
     sat.planPts &&
     sat.planPts.length > 0
@@ -650,31 +677,34 @@ export function renderScene(ctx, state, options = {}) {
     ctx.restore();
   }
 
-  // 7.1. Стрелка направления на Север «С» (интерактивная во вкладке севера; пассивная — когда оси ещё не построены)
-  let northHandleScreen = null;
+  // 7.1. Стрелка проверки направления «С» после расчёта по спутнику (без ручного поворота!)
+  const northHandleScreen = null;
   let northHandleDraw = null;
-  const showInteractiveNorthHandle =
-    !isExport && activeTab === 'plan' && !isPickingPlanWall;
+  const showVerifyNorthArrow =
+    !isExport && activeTab === 'north' && hasValidNorth && !isPickingPlanWall;
   const showPassiveNorthBadge =
-    !isExport && activeTab !== 'plan' && hasValidNorth && !(canShowMapLayers && showAxes);
+    !isExport &&
+    activeTab !== 'north' &&
+    activeTab !== 'contour' &&
+    hasValidNorth &&
+    !(canShowMapLayers && showAxes);
 
-  if (showInteractiveNorthHandle || showPassiveNorthBadge) {
+  if (showVerifyNorthArrow || showPassiveNorthBadge) {
     const northAnchorPlan =
       hasClosedContour && vastuMap.center
         ? vastuMap.center
         : { x: planWidth * 0.5, y: planHeight * 0.5 };
     const northOriginScreen = xf.planToScreen(northAnchorPlan);
 
-    const displayNorthPlanDeg = hasValidNorth ? normalizeDeg(northAngleDeg) : 0;
+    const displayNorthPlanDeg = normalizeDeg(northAngleDeg);
     const effectiveNorthScreenDeg = normalizeDeg(displayNorthPlanDeg + rotationDeg);
     const dir = azimuthToUnitVector(effectiveNorthScreenDeg);
-    const boxR = showInteractiveNorthHandle ? 20 : 14;
+    const boxR = showVerifyNorthArrow ? 20 : 14;
 
     // Вычисляем вынос значка строго ЗА пределы контура квартиры (и краёв листа, если контура нет)
-    let minOutsideR =
-      activeTab === 'plan'
-        ? Math.max(74, Math.min(viewWidth, viewHeight) * 0.28)
-        : Math.max(64, Math.min(viewWidth, viewHeight) * 0.22);
+    let minOutsideR = showVerifyNorthArrow
+      ? Math.max(74, Math.min(viewWidth, viewHeight) * 0.28)
+      : Math.max(64, Math.min(viewWidth, viewHeight) * 0.22);
 
     if (vertices.length >= 3) {
       let maxProj = 0;
@@ -735,17 +765,6 @@ export function renderScene(ctx, state, options = {}) {
     const hx = northOriginScreen.x + dir.x * chosenR;
     const hy = northOriginScreen.y + dir.y * chosenR;
 
-    if (showInteractiveNorthHandle) {
-      northHandleScreen = {
-        x: hx,
-        y: hy,
-        halfSize: boxR,
-        originX: northOriginScreen.x,
-        originY: northOriginScreen.y,
-        radius: chosenR,
-      };
-    }
-
     placedBadges.push({
       x1: hx - boxR - 6,
       y1: hy - boxR - 6,
@@ -761,6 +780,7 @@ export function renderScene(ctx, state, options = {}) {
       chosenR,
       hx,
       hy,
+      isProminentVerify: showVerifyNorthArrow,
     };
   }
 
@@ -960,7 +980,7 @@ export function renderScene(ctx, state, options = {}) {
 
       let chosenBadge = null;
       const skipBadgeBecauseNorthHandle =
-        showInteractiveNorthHandle && axis.code === 'С';
+        showVerifyNorthArrow && axis.code === 'С';
 
       if (!skipBadgeBecauseNorthHandle) {
         const baseGap = showPadas
@@ -1274,28 +1294,24 @@ export function renderScene(ctx, state, options = {}) {
     ctx.restore();
   }
 
-  // Ручка Севера «С» (если активна)
+  // Стрелка проверки Севера «С» после расчёта по спутнику (не крутится вручную)
   if (northHandleDraw) {
-    const { northOriginScreen, dir, boxR, chosenR, hx, hy } = northHandleDraw;
+    const { northOriginScreen, dir, boxR, hx, hy, isProminentVerify } = northHandleDraw;
     ctx.save();
-    if (showInteractiveNorthHandle) {
-      ctx.strokeStyle = hasValidNorth
-        ? 'rgba(66, 35, 38, 0.32)'
-        : 'rgba(66, 35, 38, 0.22)';
-      ctx.lineWidth = 1.25;
-      ctx.setLineDash([4, 4]);
+    if (isProminentVerify) {
+      ctx.strokeStyle = 'rgba(250, 248, 244, 0.88)';
+      ctx.lineWidth = 4.4;
       ctx.beginPath();
-      ctx.arc(northOriginScreen.x, northOriginScreen.y, chosenR, 0, Math.PI * 2);
+      ctx.moveTo(northOriginScreen.x, northOriginScreen.y);
+      ctx.lineTo(hx, hy);
       ctx.stroke();
-      ctx.setLineDash(hasValidNorth ? [] : [5, 4]);
 
-      ctx.strokeStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.65)';
+      ctx.strokeStyle = '#422326';
       ctx.lineWidth = 2.2;
       ctx.beginPath();
       ctx.moveTo(northOriginScreen.x, northOriginScreen.y);
       ctx.lineTo(hx, hy);
       ctx.stroke();
-      ctx.setLineDash([]);
     } else {
       ctx.strokeStyle = 'rgba(66, 35, 38, 0.45)';
       ctx.lineWidth = 1.4;
@@ -1305,18 +1321,16 @@ export function renderScene(ctx, state, options = {}) {
       ctx.stroke();
     }
 
-    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
+    ctx.fillStyle = '#422326';
     ctx.fillRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
     ctx.strokeStyle = '#CABC90';
     ctx.lineWidth = 1.5;
-    if (!hasValidNorth) ctx.setLineDash([4, 3]);
     ctx.strokeRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
-    ctx.setLineDash([]);
 
     const tipDist = boxR + 7;
     const perpX = -dir.y;
     const perpY = dir.x;
-    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
+    ctx.fillStyle = '#422326';
     ctx.beginPath();
     ctx.moveTo(hx + dir.x * tipDist, hy + dir.y * tipDist);
     ctx.lineTo(hx + dir.x * (boxR - 1) + perpX * 5.5, hy + dir.y * (boxR - 1) + perpY * 5.5);
@@ -1325,7 +1339,7 @@ export function renderScene(ctx, state, options = {}) {
     ctx.fill();
 
     ctx.fillStyle = '#CABC90';
-    ctx.font = `600 ${showInteractiveNorthHandle ? 13.5 : 11}px Manrope, sans-serif`;
+    ctx.font = `600 ${isProminentVerify ? 13.5 : 11}px Manrope, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('С', hx, hy + 0.5);

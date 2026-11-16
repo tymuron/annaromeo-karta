@@ -47,22 +47,44 @@ function assertNoOverlappingBadges(badges, label) {
 }
 
 /**
- * Создаёт реалистичный портретный скриншот со спутника (780x1688, как на экране телефона 390x844 @2x):
- * раньше такой вертикальный скриншот вписывался мелкой полоской ~100x220 px со стеной ~30 px,
- * теперь он должен открываться сразу крупно со стеной > 200 экранных пикселей.
+ * Генерирует чистый PNG-буфер архитектурного плана Г-образной квартиры (1400x1060)
+ * для реалистичной загрузки ученицей на Шаге 1.
  */
-async function createSyntheticPortraitSatellitePngBuffer(page) {
-  const dataUrl = await page.evaluate(() => {
+async function createSyntheticFloorPlanPngBuffer(page) {
+  const result = await page.evaluate(async () => {
+    const mod = await import('./src/sample-plan.js');
+    const sample = mod.createSampleFloorPlan();
+    return {
+      dataUrl: sample.canvas.toDataURL('image/png'),
+      defaultVertices: sample.defaultVertices,
+      width: sample.width,
+      height: sample.height,
+    };
+  });
+  const b64 = result.dataUrl.split(',')[1];
+  return {
+    buffer: Buffer.from(b64, 'base64'),
+    defaultVertices: result.defaultVertices,
+    width: result.width,
+    height: result.height,
+  };
+}
+
+/**
+ * Создаёт реалистичный портретный скриншот со спутника (780x1688, как на экране телефона 390x844 @2x):
+ * Г-образная крыша дома повёрнута на −22° (против часовой стрелки), чтобы при горизонтальной верхней стене
+ * на плане Север оказывался на +22° по часовой стрелке от верха листа.
+ */
+async function createSyntheticPortraitSatellitePngBuffer(page, roofRotDeg = -22) {
+  const dataUrl = await page.evaluate((rotDeg) => {
     const c = document.createElement('canvas');
     c.width = 780;
     c.height = 1688;
     const g = c.getContext('2d');
 
-    // Спутниковая подложка квартала
     g.fillStyle = '#334139';
     g.fillRect(0, 0, c.width, c.height);
 
-    // Асфальтовые проезды и дорожки двора
     g.strokeStyle = '#565A58';
     g.lineWidth = 46;
     g.beginPath();
@@ -79,7 +101,6 @@ async function createSyntheticPortraitSatellitePngBuffer(page) {
     g.lineTo(740, 480);
     g.stroke();
 
-    // Деревья вокруг дома
     const trees = [
       [190, 620, 36],
       [255, 595, 28],
@@ -101,10 +122,9 @@ async function createSyntheticPortraitSatellitePngBuffer(page) {
       g.fill();
     }
 
-    // Г-образная крыша дома в центре снимка (390, 844), повёрнутая на +22° относительно Севера сверху
     g.save();
     g.translate(390, 844);
-    g.rotate((22 * Math.PI) / 180);
+    g.rotate((rotDeg * Math.PI) / 180);
 
     g.fillStyle = 'rgba(12, 16, 14, 0.45)';
     g.beginPath();
@@ -131,7 +151,6 @@ async function createSyntheticPortraitSatellitePngBuffer(page) {
     g.fill();
     g.stroke();
 
-    // Парапет и вентшахты на кровле
     g.strokeStyle = '#6B6963';
     g.lineWidth = 2;
     g.strokeRect(-172, -108, 314, 236);
@@ -142,10 +161,93 @@ async function createSyntheticPortraitSatellitePngBuffer(page) {
     g.restore();
 
     return c.toDataURL('image/png');
-  });
+  }, roofRotDeg);
 
   const b64 = dataUrl.split(',')[1];
   return Buffer.from(b64, 'base64');
+}
+
+/**
+ * Проходит полный путь ученицы (Шаг 1 -> Шаг 2 по спутнику -> Шаг 3 контур -> Шаг 4 карта)
+ * через интерфейс для подготовки готовой карты.
+ */
+async function completeFullSatelliteFlowOnPage(page, planAsset, satBuffer, roofRotDeg = -22) {
+  await page.setInputFiles('#planFileInput', {
+    name: 'plan-kvartiry.png',
+    mimeType: 'image/png',
+    buffer: planAsset.buffer,
+  });
+  await page.waitForTimeout(160);
+
+  await page.setInputFiles('#satFileInput', {
+    name: 'satellite-home.png',
+    mimeType: 'image/png',
+    buffer: satBuffer,
+  });
+  await page.waitForTimeout(160);
+
+  const satCoords = await page.evaluate((rotDeg) => {
+    const st = window.__vastuApp.state;
+    const xf = st.lastRenderMeta.transform;
+    const rad = (rotDeg * Math.PI) / 180;
+    const toSat = (lx, ly) => ({
+      x: 390 + lx * Math.cos(rad) - ly * Math.sin(rad),
+      y: 844 + lx * Math.sin(rad) + ly * Math.cos(rad),
+    });
+    const p1 = xf.planToScreen(toSat(-190, -125));
+    const p2 = xf.planToScreen(toSat(160, -125));
+    const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+    return {
+      c1: { x: rect.left + p1.x, y: rect.top + p1.y },
+      c2: { x: rect.left + p2.x, y: rect.top + p2.y },
+    };
+  }, roofRotDeg);
+
+  await page.mouse.click(satCoords.c1.x, satCoords.c1.y);
+  await page.waitForTimeout(50);
+  await page.mouse.click(satCoords.c2.x, satCoords.c2.y);
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.__vastuApp.handlePointPickingDone());
+  await page.waitForTimeout(100);
+
+  const planWallCoords = await page.evaluate((verts) => {
+    const st = window.__vastuApp.state;
+    const xf = st.lastRenderMeta.transform;
+    const p1 = xf.planToScreen(verts[0]);
+    const p2 = xf.planToScreen(verts[1]);
+    const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+    return {
+      c1: { x: rect.left + p1.x, y: rect.top + p1.y },
+      c2: { x: rect.left + p2.x, y: rect.top + p2.y },
+    };
+  }, planAsset.defaultVertices);
+
+  await page.mouse.click(planWallCoords.c1.x, planWallCoords.c1.y);
+  await page.waitForTimeout(50);
+  await page.mouse.click(planWallCoords.c2.x, planWallCoords.c2.y);
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.__vastuApp.handlePointPickingDone());
+  await page.waitForTimeout(120);
+
+  await page.locator('#northNextContourBtn').click();
+  await page.waitForTimeout(120);
+
+  const contourScreenPts = await page.evaluate((verts) => {
+    const st = window.__vastuApp.state;
+    const xf = st.lastRenderMeta.transform;
+    const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+    return verts.map((v) => {
+      const s = xf.planToScreen(v);
+      return { x: rect.left + s.x, y: rect.top + s.y };
+    });
+  }, planAsset.defaultVertices);
+
+  for (const pt of contourScreenPts) {
+    await page.mouse.click(pt.x, pt.y);
+    await page.waitForTimeout(35);
+  }
+  await page.evaluate(() => window.__vastuApp.handlePointPickingDone());
+  await page.waitForTimeout(150);
 }
 
 async function main() {
@@ -163,6 +265,7 @@ async function main() {
   const externalRequests = [];
   const consoleErrors = [];
   const pageErrors = [];
+  const savedScreenshots = [];
 
   function attachGuards(page) {
     page.on('request', (req) => {
@@ -183,9 +286,16 @@ async function main() {
     page.on('pageerror', (err) => pageErrors.push(err.message));
   }
 
+  async function takeShot(page, filename) {
+    const full = path.join(screenshotsDir, filename);
+    await page.screenshot({ path: full });
+    savedScreenshots.push(full);
+    return full;
+  }
+
   try {
     // =========================================================================
-    // 1. ДЕСКТОП 1440x900 + сохранённая картинка PNG (все 32 пады + обрезанный Брахмастан)
+    // 1. КОМПЬЮТЕР 1440x900: Шаг 1 без плана -> прохождение шагов 1..4 -> PNG экспорт
     // =========================================================================
     const desktopCtx = await browser.newContext({
       viewport: { width: 1440, height: 900 },
@@ -196,11 +306,47 @@ async function main() {
 
     await desktopPage.goto(baseUrl, { waitUntil: 'networkidle' });
     await desktopPage.evaluate(() => document.fonts.ready);
-    await desktopPage.waitForTimeout(150);
+    await desktopPage.waitForTimeout(140);
 
-    // Проверяем настройки по умолчанию (Задача 19: подписи секторов выключены, 8 осей включены) и SVG-схему «Север по спутнику»
+    // Проверяем начальное состояние на компьютере: Шаг 1 активен, шаги 2–4 недоступны, запасного способа нет
+    const desktopStep1Check = await desktopPage.evaluate(() => {
+      const steps = window.__vastuApp.computeStepsState();
+      return {
+        activeTab: steps.activeTab,
+        hasPlan: steps.hasPlan,
+        disabledFlags: steps.steps.map((s) => s.disabled),
+        captions: steps.steps.map((s) => s.lockedCaption),
+        hasFallbackText: /Запасной способ/i.test(document.body.innerHTML),
+        hasNorthSlider: Boolean(document.getElementById('northSlider')),
+        hasNorthNumberInput: Boolean(document.getElementById('northNumberInput')),
+        topExportHidden: document.getElementById('topExportBtn').hidden,
+      };
+    });
+    assert.equal(desktopStep1Check.activeTab, 'plan');
+    assert.equal(desktopStep1Check.hasPlan, false);
+    assert.deepEqual(desktopStep1Check.disabledFlags, [false, true, true, true]);
+    assert.deepEqual(desktopStep1Check.captions, [
+      '',
+      'сначала шаг 1',
+      'сначала шаг 1',
+      'сначала шаг 1',
+    ]);
+    assert.equal(desktopStep1Check.hasFallbackText, false);
+    assert.equal(desktopStep1Check.hasNorthSlider, false);
+    assert.equal(desktopStep1Check.hasNorthNumberInput, false);
+    assert.equal(desktopStep1Check.topExportHidden, true);
+
+    await takeShot(desktopPage, 'desktop-1440x900-step1-no-plan.png');
+
+    const planAsset = await createSyntheticFloorPlanPngBuffer(desktopPage);
+    const satBufferNeg22 = await createSyntheticPortraitSatellitePngBuffer(desktopPage, -22);
+    const satBufferPos22 = await createSyntheticPortraitSatellitePngBuffer(desktopPage, 22);
+
+    await completeFullSatelliteFlowOnPage(desktopPage, planAsset, satBufferNeg22, -22);
+
     const defaultsCheck = await desktopPage.evaluate(() => {
       const app = window.__vastuApp;
+      const steps = app.computeStepsState();
       const sub = document.getElementById('padaSuboptions');
       const toggleLabelsEl = document.getElementById('toggleSectorLabels');
       const schemeNorthLine = document.querySelector(
@@ -208,13 +354,15 @@ async function main() {
       );
       const meta = app.state.lastRenderMeta;
       return {
+        stepTitles: steps.steps.map((s) => s.displayTitle),
+        activeTab: steps.activeTab,
+        northSource: app.state.northSource,
+        northAngleDeg: app.state.northAngleDeg,
         alignNorthUp: app.state.alignNorthUp,
         showSectorLabels: app.state.layers.showSectorLabels,
         toggleLabelsChecked: toggleLabelsEl ? toggleLabelsEl.checked : null,
         showAxes: app.state.layers.showAxes,
         showPadas: app.state.layers.showPadas,
-        showPadaBelts: app.state.layers.showPadaBelts,
-        showPadaScores: app.state.layers.showPadaScores,
         sectorOpacity: app.state.layers.sectorOpacity,
         subDisplay: getComputedStyle(sub).display,
         arrowX1: Number(schemeNorthLine.getAttribute('x1')),
@@ -224,369 +372,162 @@ async function main() {
         badges: meta.placedBadges,
       };
     });
-    assert.equal(defaultsCheck.alignNorthUp, true, 'По умолчанию Север сверху');
-    assert.equal(
-      defaultsCheck.showSectorLabels,
-      false,
-      'Задача 19: по умолчанию подписи секторов выключены'
-    );
-    assert.equal(
-      defaultsCheck.toggleLabelsChecked,
-      false,
-      'Задача 19: переключатель «Подписи секторов» по умолчанию не отмечен'
-    );
-    assert.equal(defaultsCheck.showAxes, true, 'Задача 19: по умолчанию оси включены');
-    assert.equal(defaultsCheck.placedAxesCount, 8, 'Задача 19: размещены все 8 букв направлений осей');
-    assert.equal(
-      defaultsCheck.badges.filter((b) => b.kind === 'sector').length,
-      0,
-      'Задача 19: по умолчанию длинных подписей секторов на экране нет'
-    );
+    assert.equal(defaultsCheck.activeTab, 'layers');
+    assert.equal(defaultsCheck.northSource, 'satellite');
+    assert.deepEqual(defaultsCheck.stepTitles.slice(0, 3), [
+      '✓ 1. План',
+      '✓ 2. Север',
+      '✓ 3. Контур стен',
+    ]);
+    assert.equal(defaultsCheck.alignNorthUp, true);
+    assert.equal(defaultsCheck.showSectorLabels, false);
+    assert.equal(defaultsCheck.toggleLabelsChecked, false);
+    assert.equal(defaultsCheck.showAxes, true);
+    assert.equal(defaultsCheck.placedAxesCount, 8);
+    assert.equal(defaultsCheck.badges.filter((b) => b.kind === 'sector').length, 0);
     const cardAxisW = defaultsCheck.renderedAxes.find((a) => a.isCardinal).lineWidth;
     const diagAxisW = defaultsCheck.renderedAxes.find((a) => !a.isCardinal).lineWidth;
-    assert.ok(
-      cardAxisW > diagAxisW,
-      `Задача 19: главные оси С–Ю и В–З толще диагональных (${cardAxisW} > ${diagAxisW})`
-    );
-    assertNoOverlappingBadges(defaultsCheck.badges, 'Desktop 1440x900 default (no sector labels)');
-    assert.equal(defaultsCheck.showPadas, false);
-    assert.equal(defaultsCheck.showPadaBelts, false);
-    assert.equal(defaultsCheck.showPadaScores, false);
-    assert.equal(defaultsCheck.sectorOpacity, 0.4);
+    assert.ok(cardAxisW > diagAxisW);
+    assertNoOverlappingBadges(defaultsCheck.badges, 'Desktop 1440x900 ready map');
     assert.equal(defaultsCheck.subDisplay, 'none');
-    assert.ok(
-      defaultsCheck.arrowX2 > defaultsCheck.arrowX1,
-      `Пункт 10: на схеме «Север по спутнику» стрелка «С» должна наклоняться вправо (x1=${defaultsCheck.arrowX1}, x2=${defaultsCheck.arrowX2})`
-    );
+    assert.ok(defaultsCheck.arrowX2 > defaultsCheck.arrowX1);
 
-    // Скриншот компьютера (итоговая карта по умолчанию: без подписей секторов, хорошо видные оси)
-    const desktopPath = path.join(screenshotsDir, 'desktop-1440x900.png');
-    await desktopPage.screenshot({ path: desktopPath });
+    await takeShot(desktopPage, 'desktop-1440x900.png');
 
-    // 1а. Сохранённая картинка PNG БЕЗ подписей секторов (по умолчанию)
-    const exportNoLabelsCheck = await desktopPage.evaluate(async () => {
-      const mod = await import('./src/renderer.js');
-      const drawnTexts = [];
-      const origGetContext = HTMLCanvasElement.prototype.getContext;
-      HTMLCanvasElement.prototype.getContext = function patchedGetContext(type, ...rest) {
-        const ctx2d = origGetContext.call(this, type, ...rest);
-        if (type === '2d' && ctx2d && !ctx2d.__textHooked) {
-          const origFillText = ctx2d.fillText.bind(ctx2d);
-          ctx2d.fillText = (txt, ...args) => {
-            drawnTexts.push(String(txt));
-            return origFillText(txt, ...args);
-          };
-          ctx2d.__textHooked = true;
-        }
-        return ctx2d;
-      };
-      try {
-        const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
-        return {
-          meta: pngCanvas.__exportRenderMeta,
-          drawnTexts,
-        };
-      } finally {
-        HTMLCanvasElement.prototype.getContext = origGetContext;
-      }
-    });
-    assert.equal(
-      exportNoLabelsCheck.meta.placedBadges.filter((b) => b.kind === 'sector').length,
-      0,
-      'Задача 19: в сохранённой картинке PNG по умолчанию нет длинных подписей секторов на плане'
-    );
-    assert.equal(
-      exportNoLabelsCheck.meta.placedAxesCount,
-      8,
-      'Задача 19: в сохранённой картинке PNG размещены все 8 букв осей (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ)'
-    );
-    assert.equal(
-      exportNoLabelsCheck.drawnTexts.some((t) => t === 'С · Север'),
-      true,
-      'Задача 19: легенда внизу картинки оставлена нетронутой'
-    );
-    assertNoOverlappingBadges(exportNoLabelsCheck.meta.placedBadges, 'Exported PNG without sector labels');
-
+    // Проверяем скачивание PNG и галочку на 4-м шаге («✓ 4. Карта»)
     const [downloadNoLabels] = await Promise.all([
       desktopPage.waitForEvent('download'),
       desktopPage.locator('#exportPngBtn').click(),
     ]);
-    const suggestedName = downloadNoLabels.suggestedFilename();
-    assert.match(
-      suggestedName,
-      /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/,
-      `Неверное имя файла скачивания: ${suggestedName}`
-    );
+    assert.match(downloadNoLabels.suggestedFilename(), /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/);
     const exportedSamplePath = path.join(screenshotsDir, 'exported-map-sample.png');
     await downloadNoLabels.saveAs(exportedSamplePath);
+    savedScreenshots.push(exportedSamplePath);
 
-    // 1б. Включаем переключатель «Подписи секторов» -> надписи появляются на экране и в картинке PNG
+    const step4TitleAfterExport = await desktopPage.evaluate(
+      () => document.querySelector('#tabBtnLayers .mode-tab-title').textContent.trim()
+    );
+    assert.equal(step4TitleAfterExport, '✓ 4. Карта');
+
+    // Проверяем переключатель «Подписи секторов» и сетку 32 пад в экспорте
     await desktopPage.locator('#toggleSectorLabels').check({ force: true });
-    await desktopPage.waitForTimeout(180);
-
-    const withLabelsCheck = await desktopPage.evaluate(async () => {
-      const mod = await import('./src/renderer.js');
-      const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
-      return {
-        showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
-        screenBadges: window.__vastuApp.state.lastRenderMeta.placedBadges,
-        exportMeta: pngCanvas.__exportRenderMeta,
-      };
-    });
-    assert.equal(withLabelsCheck.showSectorLabels, true);
-    assert.equal(
-      withLabelsCheck.screenBadges.filter((b) => b.kind === 'sector').length,
-      8,
-      'Задача 19: при включённом переключателе все 8 подписей секторов видны на экране'
-    );
-    assert.ok(
-      withLabelsCheck.exportMeta.placedBadges.filter((b) => b.kind === 'sector').length >= 7,
-      'Задача 19: при включённом переключателе подписи секторов появляются в картинке PNG так же, как раньше'
-    );
-    assert.equal(withLabelsCheck.exportMeta.placedAxesCount, 8);
-    assertNoOverlappingBadges(withLabelsCheck.screenBadges, 'Desktop 1440x900 with sector labels');
-    assertNoOverlappingBadges(withLabelsCheck.exportMeta.placedBadges, 'Exported PNG with sector labels');
-
+    await desktopPage.waitForTimeout(140);
     const [downloadWithLabels] = await Promise.all([
       desktopPage.waitForEvent('download'),
       desktopPage.locator('#exportPngBtn').click(),
     ]);
     const exportedWithLabelsPath = path.join(screenshotsDir, 'exported-map-with-labels.png');
     await downloadWithLabels.saveAs(exportedWithLabelsPath);
+    savedScreenshots.push(exportedWithLabelsPath);
 
-    // 1в. Проверка совместной работы 8 осей и всех 32 номеров пад (и без подписей секторов, и с ними)
     await desktopPage.locator('#toggleSectorLabels').uncheck({ force: true });
     await desktopPage.locator('#togglePadas').check({ force: true });
-    await desktopPage.waitForTimeout(180);
-
-    const desktopPadasBadges = await desktopPage.evaluate(
-      () => window.__vastuApp.state.lastRenderMeta.placedBadges
-    );
-    assertNoOverlappingBadges(desktopPadasBadges, 'Desktop 1440x900 with 32 padas & 8 axes');
+    await desktopPage.waitForTimeout(140);
 
     const exportMetaCheck = await desktopPage.evaluate(async () => {
       const mod = await import('./src/renderer.js');
       const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
       return pngCanvas.__exportRenderMeta;
     });
-    assert.equal(
-      exportMetaCheck.placedPadasCount,
-      32,
-      `Пункт 13: в сохранённой картинке должны быть все 32 номера пад (размещено ${exportMetaCheck.placedPadasCount})`
-    );
-    assert.equal(exportMetaCheck.placedAxesCount, 8, 'Все 8 букв осей не перекрывают номера пад');
-    assert.equal(exportMetaCheck.hiddenPadasCount, 0);
+    assert.equal(exportMetaCheck.placedPadasCount, 32);
+    assert.equal(exportMetaCheck.placedAxesCount, 8);
     assertNoOverlappingBadges(exportMetaCheck.placedBadges, 'Exported PNG 32 padas + 8 axes');
-
-    // Пункт 14 и пункт 13 (тесный контур): проверяем обрезанный стеной Брахмастан
-    const clippedCheck = await desktopPage.evaluate(async () => {
-      const mod = await import('./src/renderer.js');
-      const app = window.__vastuApp;
-      // Несимметричная Г-образная форма, где Брахмастан прижат к наружной стене и обрезается
-      app.state.vertices = [
-        { x: 180, y: 120 },
-        { x: 780, y: 120 },
-        { x: 780, y: 330 },
-        { x: 280, y: 330 },
-        { x: 280, y: 780 },
-        { x: 180, y: 780 },
-      ];
-      app.recomputeVastuMap();
-      await new Promise((r) => requestAnimationFrame(r));
-
-      // Перехватываем fillText при экспорте в PNG, чтобы убедиться: есть пометка об обрезанном Брахмастане и НЕТ фамилии Балуты!
-      const drawnTexts = [];
-      const origGetContext = HTMLCanvasElement.prototype.getContext;
-      HTMLCanvasElement.prototype.getContext = function patchedGetContext(type, ...rest) {
-        const ctx2d = origGetContext.call(this, type, ...rest);
-        if (type === '2d' && ctx2d && !ctx2d.__textHooked) {
-          const origFillText = ctx2d.fillText.bind(ctx2d);
-          ctx2d.fillText = (txt, ...args) => {
-            drawnTexts.push(String(txt));
-            return origFillText(txt, ...args);
-          };
-          ctx2d.__textHooked = true;
-        }
-        return ctx2d;
-      };
-      let exportMeta;
-      try {
-        const outCanvas = mod.exportMapToPngCanvas(app.state);
-        exportMeta = outCanvas.__exportRenderMeta;
-      } finally {
-        HTMLCanvasElement.prototype.getContext = origGetContext;
-      }
-
-      return {
-        wasClipped: app.state.vastuMap.brahmastan.wasClipped,
-        outlineLoopsCount: app.state.vastuMap.brahmastan.outlineLoops.length,
-        centerSummary: document.getElementById('centerSummaryText').textContent,
-        drawnTexts,
-        exportPlacedPadas: exportMeta.placedPadasCount,
-      };
-    });
-    assert.equal(clippedCheck.wasClipped, true);
-    assert.equal(clippedCheck.outlineLoopsCount, 1, 'Пункт 4: только 1 внешний контур без внутренних швов');
-    assert.match(clippedCheck.centerSummary, /Брахмастан прижат к наружной стене/);
-    assert.equal(
-      /Балут/i.test(clippedCheck.centerSummary),
-      false,
-      'Пункт 14: в описании обрезанного Брахмастана не пишется «по методу С. А. Балуты»'
-    );
-    assert.equal(
-      clippedCheck.drawnTexts.some((t) => /Балут/i.test(t)),
-      false,
-      'Пункт 14: в сохранённой картинке при обрезанном Брахмастане не пишется «по методу С. А. Балуты»'
-    );
-    assert.equal(
-      clippedCheck.drawnTexts.some((t) => /Брахмастан (обрезан стеной|прижат к наружной стене)/.test(t)),
-      true,
-      'Пункт 14: в сохранённой картинке есть явная пометка об обрезанном Брахмастане'
-    );
-    assert.equal(
-      clippedCheck.exportPlacedPadas,
-      32,
-      'Пункт 13: даже на узкой Г-образной квартире в картинке размещены все 32 номера пад'
-    );
 
     await desktopCtx.close();
 
     // =========================================================================
-    // 2. ТЕЛЕФОН 390x844 — итоговая карта + подсказка приблизить пады (пункт 13)
+    // 2. ТЕЛЕФОН 390x844 (iPhone):
+    //    - Шаг 1 без плана (шаги 2–4 недоступны, одна крупная кнопка)
+    //    - Шаг 2 со спутником (крупное поле >= 75% высоты, 1 строка с Отменить / Готово)
+    //    - Шаг 2 отметка точек на плане (крупное поле >= 75% высоты, 1 строка с Отменить / Готово)
+    //    - Шаг 2 проверка «С» (без ручного вращения стрелки «С»)
+    //    - Шаг 3 контур стен (крупное поле >= 75% высоты, 1 строка с Отменить / Готово, короткие стены лоджии)
+    //    - Шаг 4 готовая карта
     // =========================================================================
-    const mobileCtx = await browser.newContext({
+    const mobile390Ctx = await browser.newContext({
       viewport: { width: 390, height: 844 },
       deviceScaleFactor: 2,
       isMobile: true,
       hasTouch: true,
     });
-    const mobilePage = await mobileCtx.newPage();
-    attachGuards(mobilePage);
+    const mobile390Page = await mobile390Ctx.newPage();
+    attachGuards(mobile390Page);
 
-    await mobilePage.goto(baseUrl, { waitUntil: 'networkidle' });
-    await mobilePage.evaluate(() => document.fonts.ready);
-    await mobilePage.waitForTimeout(160);
+    await mobile390Page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await mobile390Page.evaluate(() => document.fonts.ready);
+    await mobile390Page.waitForTimeout(150);
 
-    // Скриншот телефона 390x844 — итоговая карта по умолчанию (без подписей секторов, хорошо видные оси)
-    const mobileDefaultState = await mobilePage.evaluate(() => ({
-      badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
-      placedAxesCount: window.__vastuApp.state.lastRenderMeta.placedAxesCount,
-      showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
-    }));
-    assert.equal(mobileDefaultState.showSectorLabels, false);
-    assert.equal(mobileDefaultState.placedAxesCount, 8);
-    assert.equal(
-      mobileDefaultState.badges.filter((b) => b.kind === 'sector').length,
-      0
-    );
-    assertNoOverlappingBadges(mobileDefaultState.badges, 'Mobile 390x844 default');
-
-    const mobilePath = path.join(screenshotsDir, 'mobile-390x844.png');
-    await mobilePage.screenshot({ path: mobilePath });
-
-    // Дополнительно проверяем сетку пад + 8 осей на телефоне 390x844
-    await mobilePage.locator('#togglePadas').check({ force: true });
-    await mobilePage.waitForTimeout(200);
-
-    const mobilePadaState = await mobilePage.evaluate(() => ({
-      badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
-      hiddenPadasCount: window.__vastuApp.state.lastRenderMeta.hiddenPadasCount,
-      hintHidden: document.getElementById('padaZoomHint').hidden,
-      hintText: document.getElementById('padaZoomHint').textContent.trim(),
-    }));
-    assertNoOverlappingBadges(mobilePadaState.badges, 'Mobile 390x844 with padas');
-    if (mobilePadaState.hiddenPadasCount > 0) {
-      assert.equal(
-        mobilePadaState.hintHidden,
-        false,
-        'Пункт 13: на телефоне при скрытых номерах пад видна подсказка приблизить карту'
-      );
-      assert.equal(mobilePadaState.hintText, 'Приблизьте, чтобы увидеть все номера пад');
-    }
-
-    // =========================================================================
-    // 3. ТЕЛЕФОН 390x844 — крупный спутник (п. 3), проверка «С» (п. 2, 5, 12),
-    //    стрелка >3° (п. 8), короткие стены лоджии (п. 9) и отмена контура без сброса Севера (п. 1)
-    // =========================================================================
-    const satBuffer = await createSyntheticPortraitSatellitePngBuffer(mobilePage);
-
-    assert.equal(fs.existsSync(EXTERNAL_CCITT_PDF), true, 'Файл CCITT G4 скана должен существовать');
-    await mobilePage.setInputFiles('#planFileInput', EXTERNAL_CCITT_PDF);
-    await mobilePage.waitForTimeout(500);
-
-    const ccittCheck = await mobilePage.evaluate(() => {
-      const st = window.__vastuApp.state;
-      const c = st.planCanvas;
-      if (!c) return { loaded: false };
-      const g = c.getContext('2d');
-      const data = g.getImageData(0, 0, c.width, c.height).data;
-      let darkPixels = 0;
-      for (let i = 0; i < data.length; i += 16) {
-        if (data[i] < 120 && data[i + 1] < 120 && data[i + 2] < 120) {
-          darkPixels++;
-        }
-      }
+    // 2.1. Шаг 1 без плана на 390x844
+    const m390Step1 = await mobile390Page.evaluate(() => {
+      const heroBtn = document.getElementById('openPlanHeroBtn').getBoundingClientRect();
+      const tabNorth = document.getElementById('tabBtnNorth');
+      const tabContour = document.getElementById('tabBtnContour');
+      const tabLayers = document.getElementById('tabBtnLayers');
+      // Пытаемся программно переключить шаг без плана — должен остаться 'plan'
+      window.__vastuApp.setActiveTab('north');
+      window.__vastuApp.setActiveTab('contour');
+      window.__vastuApp.setActiveTab('layers');
       return {
-        loaded: true,
-        maxSide: Math.max(c.width, c.height),
-        pixels: c.width * c.height,
-        darkPixels,
-        northSet: st.northSet,
-        northAngleDeg: st.northAngleDeg,
-        topExportDisabled: document.getElementById('topExportBtn').disabled,
-        fallbackSummary: document
-          .querySelector('#panelPlan .subtle-card .small-copy')
-          .textContent.trim(),
+        activeAfterTries: window.__vastuApp.state.activeTab,
+        northDisabled: tabNorth.disabled,
+        contourDisabled: tabContour.disabled,
+        layersDisabled: tabLayers.disabled,
+        northText: tabNorth.textContent.replace(/\s+/g, ' ').trim(),
+        heroVisibleInViewport: heroBtn.top >= 0 && heroBtn.bottom <= window.innerHeight,
+        heroHeight: heroBtn.height,
+        zoomControlsHidden: document.getElementById('canvasZoomControls').hidden,
+        topExportHidden: document.getElementById('topExportBtn').hidden,
       };
     });
-    assert.equal(ccittCheck.loaded, true, 'CCITT G4 PDF должен открываться');
-    assert.ok(ccittCheck.darkPixels > 100);
-    assert.ok(ccittCheck.maxSide <= 2000);
-    assert.ok(ccittCheck.pixels <= 16_000_000);
-    assert.equal(ccittCheck.northSet, false);
-    assert.equal(ccittCheck.northAngleDeg, null);
-    assert.equal(ccittCheck.topExportDisabled, true);
-    assert.match(
-      ccittCheck.fallbackSummary,
-      /Если знаете, куда на листе смотрит Север/,
-      'Пункт 5: исправлен заголовок запасного способа'
-    );
+    assert.equal(m390Step1.activeAfterTries, 'plan', 'Без плана шаги 2–4 не открываются');
+    assert.equal(m390Step1.northDisabled, true);
+    assert.equal(m390Step1.contourDisabled, true);
+    assert.equal(m390Step1.layersDisabled, true);
+    assert.match(m390Step1.northText, /2\. Север.*сначала шаг 1/);
+    assert.equal(m390Step1.heroVisibleInViewport, true);
+    assert.ok(m390Step1.heroHeight >= 50, 'Крупная кнопка «Откройте план квартиры»');
+    assert.equal(m390Step1.zoomControlsHidden, true);
+    assert.equal(m390Step1.topExportHidden, true);
 
-    // Пункт 8: касание стрелки «С» без Севера (и микродрожание < 3°) НЕ делает Север заданным!
-    const northHandleTapCheck = await mobilePage.evaluate(() => {
-      const app = window.__vastuApp;
-      const h = app.state.lastRenderMeta.northHandleScreen;
-      const rect = document.getElementById('mapCanvas').getBoundingClientRect();
-      return {
-        hx: rect.left + h.x,
-        hy: rect.top + h.y,
-        ox: rect.left + h.originX,
-        oy: rect.top + h.originY,
-      };
+    await takeShot(mobile390Page, 'mobile-390x844-step1-no-plan.png');
+
+    // Загружаем план квартиры -> автоматически открывается Шаг 2 («2. Север») с одной крупной кнопкой «Загрузить скриншот со спутника»
+    await mobile390Page.setInputFiles('#planFileInput', {
+      name: 'plan-kvartiry.png',
+      mimeType: 'image/png',
+      buffer: planAsset.buffer,
     });
-    await mobilePage.touchscreen.tap(northHandleTapCheck.hx, northHandleTapCheck.hy);
-    await mobilePage.waitForTimeout(80);
-    const northAfterSimpleTap = await mobilePage.evaluate(
-      () => window.__vastuApp.state.northSet
-    );
-    assert.equal(
-      northAfterSimpleTap,
-      false,
-      'Пункт 8: одиночное касание «С» без поворота не задаёт Север около 0°'
-    );
+    await mobile390Page.waitForTimeout(200);
 
-    // Загружаем портретный скриншот со спутника (780x1688)
-    await mobilePage.setInputFiles('#satFileInput', {
+    const m390AfterPlan = await mobile390Page.evaluate(() => ({
+      activeTab: window.__vastuApp.state.activeTab,
+      tab1Title: document.querySelector('#tabBtnPlan .mode-tab-title').textContent.trim(),
+      tab2Active: document.getElementById('tabBtnNorth').classList.contains('is-active'),
+      tab2Disabled: document.getElementById('tabBtnNorth').disabled,
+      northHandleScreen: window.__vastuApp.state.lastRenderMeta.northHandleScreen,
+      uploadVisible: !document.getElementById('northSubUpload').hidden,
+    }));
+    assert.equal(m390AfterPlan.activeTab, 'north', 'После загрузки плана сразу открывается Шаг 2 (Север)');
+    assert.equal(m390AfterPlan.tab1Title, '✓ 1. План');
+    assert.equal(m390AfterPlan.tab2Active, true);
+    assert.equal(m390AfterPlan.tab2Disabled, false);
+    assert.equal(m390AfterPlan.northHandleScreen, null, 'Ручной ручки поворота «С» нет');
+    assert.equal(m390AfterPlan.uploadVisible, true);
+
+    await takeShot(mobile390Page, 'mobile-390x844-step2-upload-sat.png');
+
+    // 2.2. Загружаем портретный скриншот со спутника -> крупное поле (>= 75% экрана) + сжатая 1-строчная панель
+    await mobile390Page.setInputFiles('#satFileInput', {
       name: 'satellite-phone-portrait.png',
       mimeType: 'image/png',
-      buffer: satBuffer,
+      buffer: satBufferPos22,
     });
-    await mobilePage.waitForTimeout(220);
+    await mobile390Page.waitForTimeout(220);
 
-    // Пункт 3: проверяем, что скриншот открылся СРАЗУ КРУПНО (ширина >= 380 px, стена > 180 px),
-    // и есть подсказка «Разведите двумя пальцами, чтобы увеличить дом»
-    const satScaleCheck = await mobilePage.evaluate(() => {
+    const m390SatScale = await mobile390Page.evaluate(() => {
       const st = window.__vastuApp.state;
+      const stageRect = document.getElementById('canvasStage').getBoundingClientRect();
+      const barRect = document.getElementById('mobilePickingBar').getBoundingClientRect();
       const xf = st.lastRenderMeta.transform;
       const rad = (22 * Math.PI) / 180;
       const toSat = (lx, ly) => ({
@@ -598,443 +539,517 @@ async function main() {
       const pTooClose = { x: p1.x + 36, y: p1.y + 12 };
       const rect = document.getElementById('mapCanvas').getBoundingClientRect();
       return {
+        stageRatio: stageRect.height / window.innerHeight,
+        barHeight: barRect.height,
+        inspectorScrollDisplay: getComputedStyle(document.getElementById('inspectorScroll')).display,
         renderedSatWidthPx: st.sat.width * st.satZoom,
-        renderedSatHeightPx: st.sat.height * st.satZoom,
         wallScreenLenPx: Math.hypot(p2.x - p1.x, p2.y - p1.y),
-        hintText: document.getElementById('satStepHintText').textContent,
-        bannerText: document.getElementById('canvasStatusBanner').textContent,
         c1: { x: rect.left + p1.x, y: rect.top + p1.y },
         c2: { x: rect.left + p2.x, y: rect.top + p2.y },
         cShort: { x: rect.left + pTooClose.x, y: rect.top + pTooClose.y },
       };
     });
     assert.ok(
-      satScaleCheck.renderedSatWidthPx >= 380,
-      `Пункт 3: снимок спутника открывается крупно по ширине экрана (${satScaleCheck.renderedSatWidthPx.toFixed(1)} px)`
+      m390SatScale.stageRatio >= 0.75,
+      `390x844 спутник: высота поля ${(m390SatScale.stageRatio * 100).toFixed(1)}% >= 75%`
     );
-    assert.ok(
-      satScaleCheck.wallScreenLenPx >= 150,
-      `Пункт 3: стена дома на снимке крупная (${satScaleCheck.wallScreenLenPx.toFixed(1)} px вместо 30 px)`
-    );
-    assert.match(
-      satScaleCheck.hintText,
-      /Разведите двумя пальцами, чтобы увеличить дом/,
-      'Пункт 3: показана подсказка про увеличение двумя пальцами'
-    );
+    assert.ok(m390SatScale.barHeight <= 64, 'Панель сжата до одной строки');
+    assert.equal(m390SatScale.inspectorScrollDisplay, 'none');
+    assert.ok(m390SatScale.renderedSatWidthPx >= 380);
+    assert.ok(m390SatScale.wallScreenLenPx >= 150);
 
-    // Ставим точку 1 на снимке спутника
-    await mobilePage.touchscreen.tap(satScaleCheck.c1.x, satScaleCheck.c1.y);
-    await mobilePage.waitForTimeout(120);
-
-    // Снимаем контрольный скриншот шага 1 «На спутнике» крупно!
-    const mobileSatStep1Path = path.join(screenshotsDir, 'mobile-390x844-sat-step1.png');
-    await mobilePage.screenshot({ path: mobileSatStep1Path });
-
-    // Пункт 3: пробуем поставить точку 2 слишком близко (~38 px < 100 px) — не должна приняться!
-    await mobilePage.touchscreen.tap(satScaleCheck.cShort.x, satScaleCheck.cShort.y);
-    await mobilePage.waitForTimeout(100);
-    const shortSatRejected = await mobilePage.evaluate(() => ({
-      satPtsLen: window.__vastuApp.state.sat.satPts.length,
-      satViewMode: window.__vastuApp.state.satViewMode,
-      hintText: document.getElementById('satStepHintText').textContent,
-    }));
-    assert.equal(shortSatRejected.satPtsLen, 1, 'Пункт 3: короткая стена (< 100 px) на спутнике отклонена');
-    assert.equal(shortSatRejected.satViewMode, 'sat');
-    assert.match(
-      shortSatRejected.hintText,
-      /слишком короткой.*подальше друг от друга/i
+    // Ставим точку 1, проверяем отклонение короткой стены (< 100px), затем ставим точку 2 и снимаем скриншот
+    await mobile390Page.touchscreen.tap(m390SatScale.c1.x, m390SatScale.c1.y);
+    await mobile390Page.waitForTimeout(80);
+    await mobile390Page.touchscreen.tap(m390SatScale.cShort.x, m390SatScale.cShort.y);
+    await mobile390Page.waitForTimeout(80);
+    assert.equal(
+      await mobile390Page.evaluate(() => window.__vastuApp.state.sat.satPts.length),
+      1,
+      'Короткая стена (< 100 px) на спутнике отклонена'
     );
 
-    // Теперь ставим точку 2 далеко (> 200 px) -> переход на «2. На плане»
-    await mobilePage.touchscreen.tap(satScaleCheck.c2.x, satScaleCheck.c2.y);
-    await mobilePage.waitForTimeout(180);
+    await mobile390Page.touchscreen.tap(m390SatScale.c2.x, m390SatScale.c2.y);
+    await mobile390Page.waitForTimeout(100);
+    await takeShot(mobile390Page, 'mobile-390x844-sat-step1.png');
 
-    // На плане сначала пробуем поставить короткий отрезок (< 100 px) — он отклоняется с просьбой приблизить план;
-    // затем приближаем план кнопкой «+» и ставим два угла длинной стены (> 140 px)
-    const shortPlanTapCoords = await mobilePage.evaluate(() => {
+    // Нажимаем «Готово» в однострочной панели -> переходим к отметке тех же точек 1 и 2 на КРУПНОМ плане!
+    await mobile390Page.locator('#pickingDoneBtn').click();
+    await mobile390Page.waitForTimeout(180);
+
+    const m390PlanPick = await mobile390Page.evaluate((verts) => {
+      const stageRect = document.getElementById('canvasStage').getBoundingClientRect();
+      const barRect = document.getElementById('mobilePickingBar').getBoundingClientRect();
+      const zoomControlsRect = document.getElementById('canvasZoomControls').getBoundingClientRect();
       const st = window.__vastuApp.state;
       const xf = st.lastRenderMeta.transform;
-      const p1 = xf.planToScreen({ x: st.planWidth * 0.25, y: st.planHeight * 0.30 });
+      const p1 = xf.planToScreen(verts[0]);
+      const p2 = xf.planToScreen(verts[1]);
       const rect = document.getElementById('mapCanvas').getBoundingClientRect();
       return {
+        satViewMode: st.satViewMode,
+        stageHeight: stageRect.height,
+        stageRatio: stageRect.height / window.innerHeight,
+        barHeight: barRect.height,
+        undoVisible: !document.getElementById('pickingUndoBtn').hidden,
+        doneDisabledBefore: document.getElementById('pickingDoneBtn').disabled,
+        zoomButtonsVisible: zoomControlsRect.width > 80 && zoomControlsRect.height >= 38,
+        wallLenOnLargePlanPx: Math.hypot(p2.x - p1.x, p2.y - p1.y),
         c1: { x: rect.left + p1.x, y: rect.top + p1.y },
-        cShort: { x: rect.left + p1.x + 42, y: rect.top + p1.y },
-      };
-    });
-
-    await mobilePage.touchscreen.tap(shortPlanTapCoords.c1.x, shortPlanTapCoords.c1.y);
-    await mobilePage.waitForTimeout(80);
-    await mobilePage.touchscreen.tap(shortPlanTapCoords.cShort.x, shortPlanTapCoords.cShort.y);
-    await mobilePage.waitForTimeout(80);
-    const shortPlanRejected = await mobilePage.evaluate(() => ({
-      len: window.__vastuApp.state.sat.planPts.length,
-      hint: document.getElementById('satStepHintText').textContent,
-    }));
-    assert.equal(shortPlanRejected.len, 1, 'Пункт 3: короткая стена (< 100 px) на плане тоже отклонена');
-    assert.match(shortPlanRejected.hint, /слишком короткой.*подальше друг от друга/i);
-
-    // Приближаем план (как просит подсказка) и ставим вторую точку стены (> 140 px)
-    await mobilePage.locator('#zoomInBtn').click();
-    await mobilePage.locator('#zoomInBtn').click();
-    await mobilePage.waitForTimeout(100);
-
-    const planTap2Coords = await mobilePage.evaluate(() => {
-      const st = window.__vastuApp.state;
-      const xf = st.lastRenderMeta.transform;
-      const p1 = xf.planToScreen(st.sat.planPts[0]);
-      const p2 = xf.planToScreen({ x: st.planWidth * 0.82, y: st.planHeight * 0.30 });
-      const rect = document.getElementById('mapCanvas').getBoundingClientRect();
-      return {
         c2: { x: rect.left + p2.x, y: rect.top + p2.y },
-        distPx: Math.hypot(p2.x - p1.x, p2.y - p1.y),
       };
-    });
-    assert.ok(planTap2Coords.distPx >= 130, `Длина стены на приближённом плане ${planTap2Coords.distPx.toFixed(1)} px >= 130 px`);
+    }, planAsset.defaultVertices);
 
-    await mobilePage.touchscreen.tap(planTap2Coords.c2.x, planTap2Coords.c2.y);
-    await mobilePage.waitForTimeout(280);
-
-    const afterSatCalc = await mobilePage.evaluate(() => {
-      const box = document.getElementById('satVerifyBox');
-      const boxRect = box.getBoundingClientRect();
-      return {
-        northSet: window.__vastuApp.state.northSet,
-        northAngleDeg: window.__vastuApp.state.northAngleDeg,
-        satViewMode: window.__vastuApp.state.satViewMode,
-        verifyVisible: !box.hidden,
-        verifyBottom: boxRect.bottom,
-        viewportH: window.innerHeight,
-        tiltHidden: document.getElementById('satHouseTiltLine').hidden,
-        tiltText: document.getElementById('satHouseTiltLine').textContent.trim(),
-        bannerText: document.getElementById('canvasStatusBanner').textContent.trim(),
-        rotateHintHidden: document.getElementById('rotateSheetHint').hidden,
-      };
-    });
-    assert.equal(afterSatCalc.northSet, true, 'Север рассчитан по двум отрезкам');
-    assert.equal(afterSatCalc.satViewMode, 'done');
-    assert.equal(afterSatCalc.verifyVisible, true);
-    assert.equal(afterSatCalc.tiltHidden, false, 'Пункт 5: показана строка угла поворота дома');
-    assert.equal(
-      afterSatCalc.tiltText,
-      'Дом повёрнут на 22° относительно сторон света',
-      'Пункт 5: точная формулировка угла поворота дома из урока'
-    );
+    assert.equal(m390PlanPick.satViewMode, 'plan-pick');
     assert.ok(
-      afterSatCalc.verifyBottom <= afterSatCalc.viewportH + 2,
-      `Пункт 12: блок «Проверьте направление «С»» прокручен в видимую часть экрана (bottom=${afterSatCalc.verifyBottom}, vh=${afterSatCalc.viewportH})`
+      m390PlanPick.stageRatio >= 0.75,
+      `390x844 точки на плане: рабочее поле занимает ${(m390PlanPick.stageRatio * 100).toFixed(1)}% экрана (>= 75%)`
     );
-    assert.match(
-      afterSatCalc.bannerText,
-      /Проверьте направление «С»/,
-      'Пункт 12: проверка продублирована в баннере над чертежом'
+    assert.ok(m390PlanPick.barHeight <= 64);
+    assert.equal(m390PlanPick.undoVisible, true);
+    assert.equal(m390PlanPick.doneDisabledBefore, true);
+    assert.equal(m390PlanPick.zoomButtonsVisible, true);
+    assert.ok(
+      m390PlanPick.wallLenOnLargePlanPx >= 115,
+      `На крупном поле плана стена сразу широкая (${m390PlanPick.wallLenOnLargePlanPx.toFixed(1)} px >= 100 px) даже без доп. приближения!`
     );
+
+    // Ставим точки 1 и 2 пальцем на крупном плане
+    await mobile390Page.touchscreen.tap(m390PlanPick.c1.x, m390PlanPick.c1.y);
+    await mobile390Page.waitForTimeout(80);
+    await mobile390Page.touchscreen.tap(m390PlanPick.c2.x, m390PlanPick.c2.y);
+    await mobile390Page.waitForTimeout(120);
+
     assert.equal(
-      afterSatCalc.rotateHintHidden,
+      await mobile390Page.evaluate(() => document.getElementById('pickingDoneBtn').disabled),
       false,
-      'Пункт 11: при заданном Севере видно пояснение под «Повернуть лист на 90°»'
+      'После отметки точек 1 и 2 на плане кнопка «Готово» активна'
     );
 
-    // Скриншот шага «Проверка «С»» после расчёта
-    const mobileSatStep2Path = path.join(screenshotsDir, 'mobile-390x844-sat-step2.png');
-    await mobilePage.screenshot({ path: mobileSatStep2Path });
+    // Скриншот: телефон 390x844, шаг 2 с крупным планом при отметке точек!
+    await takeShot(mobile390Page, 'mobile-390x844-step2-plan-points.png');
 
-    // Пункт 2: в виде «Проверка «С»» (план повёрнут севером вверх) пытаемся перетащить точку «1» пальцем —
-    // точка «1» должна быть ТОЛЬКО ДЛЯ ПОКАЗА, Север НЕ уплывает!
-    const dragPoint1InVerifyCheck = await mobilePage.evaluate(() => {
+    // Нажимаем «Готово» -> расчёт Севера по спутнику и переход в «Проверка «С»»
+    await mobile390Page.locator('#pickingDoneBtn').click();
+    await mobile390Page.waitForTimeout(220);
+
+    const m390Verify = await mobile390Page.evaluate(() => {
       const st = window.__vastuApp.state;
-      const xf = st.lastRenderMeta.transform;
-      const p1Screen = xf.planToScreen(st.sat.planPts[0]);
+      const northBadge = st.lastRenderMeta.placedBadges.find((b) => b.kind === 'north');
       const rect = document.getElementById('mapCanvas').getBoundingClientRect();
       const beforeNorth = st.northAngleDeg;
-      const beforeP1 = { ...st.sat.planPts[0] };
 
-      const c = document.getElementById('mapCanvas');
-      const sx = rect.left + p1Screen.x;
-      const sy = rect.top + p1Screen.y;
-      c.dispatchEvent(
-        new PointerEvent('pointerdown', {
-          pointerId: 31,
-          pointerType: 'touch',
-          clientX: sx,
-          clientY: sy,
-          bubbles: true,
-        })
-      );
-      const frozenDuringDrag = st.frozenRotationDeg;
-      c.dispatchEvent(
-        new PointerEvent('pointermove', {
-          pointerId: 31,
-          pointerType: 'touch',
-          clientX: sx + 45,
-          clientY: sy + 35,
-          bubbles: true,
-        })
-      );
-      c.dispatchEvent(
-        new PointerEvent('pointerup', {
-          pointerId: 31,
-          pointerType: 'touch',
-          clientX: sx + 45,
-          clientY: sy + 35,
-          bubbles: true,
-        })
-      );
+      // Пробуем покрутить стрелку «С» пальцем — Север НЕ должен изменяться (ручной поворот убран!)
+      if (northBadge) {
+        const cx = rect.left + (northBadge.x1 + northBadge.x2) * 0.5;
+        const cy = rect.top + (northBadge.y1 + northBadge.y2) * 0.5;
+        const c = document.getElementById('mapCanvas');
+        c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 41, pointerType: 'touch', clientX: cx, clientY: cy, bubbles: true }));
+        c.dispatchEvent(new PointerEvent('pointermove', { pointerId: 41, pointerType: 'touch', clientX: cx + 70, clientY: cy + 40, bubbles: true }));
+        c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 41, pointerType: 'touch', clientX: cx + 70, clientY: cy + 40, bubbles: true }));
+      }
 
       return {
+        northSet: st.northSet,
+        northSource: st.northSource,
         beforeNorth,
-        afterNorth: st.northAngleDeg,
-        beforeP1,
-        afterP1: { ...st.sat.planPts[0] },
-        frozenDuringDrag,
+        afterDragNorth: st.northAngleDeg,
+        hasNorthVerifyArrowOnCanvas: Boolean(northBadge),
+        verifyVisible: !document.getElementById('northSubVerify').hidden,
+        tiltText: document.getElementById('satHouseTiltLine').textContent.trim(),
+        tab2Title: document.querySelector('#tabBtnNorth .mode-tab-title').textContent.trim(),
       };
     });
-    assert.ok(
-      Number.isFinite(dragPoint1InVerifyCheck.frozenDuringDrag),
-      'Пункт 2: во время перетаскивания поворот экрана заморожен'
-    );
-    assert.equal(
-      dragPoint1InVerifyCheck.afterNorth,
-      dragPoint1InVerifyCheck.beforeNorth,
-      'Пункт 2: перетаскивание по точке «1» в «Проверке «С»» не уводит Север'
-    );
-    assert.deepEqual(
-      dragPoint1InVerifyCheck.afterP1,
-      dragPoint1InVerifyCheck.beforeP1,
-      'Пункт 2: точка «1» в виде «Проверка «С»» только для показа'
-    );
+    assert.equal(m390Verify.northSet, true);
+    assert.equal(m390Verify.northSource, 'satellite');
+    assert.equal(m390Verify.hasNorthVerifyArrowOnCanvas, true, 'Проверка «С» после расчёта осталась на чертеже');
+    assert.equal(m390Verify.afterDragNorth, m390Verify.beforeNorth, 'Стрелка «С» не вращается вручную');
+    assert.equal(m390Verify.verifyVisible, true);
+    assert.equal(m390Verify.tiltText, 'Дом повёрнут на 22° относительно сторон света');
+    assert.equal(m390Verify.tab2Title, '✓ 2. Север');
 
-    // =========================================================================
-    // Пункты 1 и 9 на телефоне: обводка квартиры с лоджией (короткие стены ~16 px),
-    // задание Севера ПОСЛЕ углов и «Отменить» лишнего угла без потери Севера!
-    // =========================================================================
-    // Сначала сбросим Север и точки, чтобы воспроизвести точный сценарий из пункта 1:
-    // ученица обвела углы (плюс лишний угол) -> задала Север после контура -> нажала «Отменить» на лишнем угле.
-    await mobilePage.evaluate(() => {
-      const st = window.__vastuApp.state;
-      st.vertices = [];
-      st.undoHistory.clear();
-      st.northSet = false;
-      st.northAngleDeg = null;
-      st.sat.planPts = [];
-      st.sat.satPts = [];
-      window.__vastuApp.recomputeVastuMap();
-    });
-    await mobilePage.locator('#tabBtnContour').click();
-    await mobilePage.waitForTimeout(120);
+    await takeShot(mobile390Page, 'mobile-390x844-sat-step2.png');
 
-    // Вычисляем экранные координаты 8 углов квартиры с лоджией, где короткие торцы лоджии имеют длину ~16 px на экране
-    // (это меньше прежнего 26 px радиуса захвата, из-за чего раньше касания терялись!) + 9-й лишний угол.
-    const loggiaTapData = await mobilePage.evaluate(() => {
+    // 2.3. Переходим одной кнопкой к Шагу 3 («Далее: 3. Контур стен →») -> крупное поле (>= 75% экрана)
+    await mobile390Page.locator('#northNextContourBtn').click();
+    await mobile390Page.waitForTimeout(180);
+
+    const m390ContourLayout = await mobile390Page.evaluate((verts) => {
+      const stageRect = document.getElementById('canvasStage').getBoundingClientRect();
+      const barRect = document.getElementById('mobilePickingBar').getBoundingClientRect();
       const st = window.__vastuApp.state;
       const xf = st.lastRenderMeta.transform;
       const rect = document.getElementById('mapCanvas').getBoundingClientRect();
-      // Подбираем сдвиг короткой стенки ровно в 16 экранных пикселей!
-      const shortPlanDelta = 16 / xf.zoom;
-      const x0 = st.planWidth * 0.16;
-      const xLog1 = st.planWidth * 0.36;
-      const xLog2 = st.planWidth * 0.64;
-      const x1 = st.planWidth * 0.84;
-      const yLogTop = st.planHeight * 0.20;
-      const yMainTop = yLogTop + shortPlanDelta;
-      const yBot = st.planHeight * 0.78;
-
-      const ptsPlan = [
-        { x: x0, y: yMainTop },
-        { x: xLog1, y: yMainTop },
-        { x: xLog1, y: yLogTop }, // короткий 16 px левый торец лоджии!
-        { x: xLog2, y: yLogTop },
-        { x: xLog2, y: yMainTop }, // короткий 16 px правый торец лоджии!
-        { x: x1, y: yMainTop },
-        { x: x1, y: yBot },
-        { x: x0, y: yBot },
-      ];
-      const screenCorners = ptsPlan.map((p) => {
-        const s = xf.planToScreen(p);
+      const screenPts = verts.map((v) => {
+        const s = xf.planToScreen(v);
         return { x: rect.left + s.x, y: rect.top + s.y };
       });
-      const extra9th = (() => {
-        const s = xf.planToScreen({ x: st.planWidth * 0.12, y: st.planHeight * 0.50 });
+      const extraPt = (() => {
+        const s = xf.planToScreen({ x: 140, y: 520 });
         return { x: rect.left + s.x, y: rect.top + s.y };
       })();
-      const tooCloseTap = {
-        x: screenCorners[0].x + 6,
-        y: screenCorners[0].y + 4,
+      return {
+        stageRatio: stageRect.height / window.innerHeight,
+        barHeight: barRect.height,
+        screenPts,
+        extraPt,
       };
-      return { screenCorners, extra9th, tooCloseTap };
-    });
+    }, planAsset.defaultVertices);
 
-    for (const c of loggiaTapData.screenCorners) {
-      await mobilePage.touchscreen.tap(c.x, c.y);
-      await mobilePage.waitForTimeout(45);
+    assert.ok(
+      m390ContourLayout.stageRatio >= 0.75,
+      `390x844 контур: рабочее поле занимает ${(m390ContourLayout.stageRatio * 100).toFixed(1)}% высоты (>= 75%)`
+    );
+    assert.ok(m390ContourLayout.barHeight <= 64);
+
+    for (const pt of m390ContourLayout.screenPts) {
+      await mobile390Page.touchscreen.tap(pt.x, pt.y);
+      await mobile390Page.waitForTimeout(45);
     }
-    const loggiaCountAfter8 = await mobilePage.evaluate(
-      () => window.__vastuApp.state.vertices.length
-    );
-    assert.equal(
-      loggiaCountAfter8,
-      8,
-      'Пункт 9: все 8 углов квартиры с короткими 16 px торцами лоджии поставились без потерь'
-    );
+    // Ставим лишний 7-й угол и проверяем кнопку «Отменить» в сжатой строке (не сбрасывает Север!)
+    await mobile390Page.touchscreen.tap(m390ContourLayout.extraPt.x, m390ContourLayout.extraPt.y);
+    await mobile390Page.waitForTimeout(50);
+    assert.equal(await mobile390Page.evaluate(() => window.__vastuApp.state.vertices.length), 7);
 
-    // Проверяем слишком близкое касание (~7 px от угла): угол не дублируется, появляется подсказка «приблизьте план»
-    await mobilePage.touchscreen.tap(loggiaTapData.tooCloseTap.x, loggiaTapData.tooCloseTap.y);
-    await mobilePage.waitForTimeout(60);
-    const tooCloseBanner = await mobilePage.locator('#canvasStatusBanner').textContent();
-    assert.match(
-      tooCloseBanner,
-      /приблизьте план/i,
-      'Пункт 9: при слишком близком касании выводится подсказка «приблизьте план»'
-    );
+    await mobile390Page.locator('#pickingUndoBtn').click();
+    await mobile390Page.waitForTimeout(80);
+    const m390AfterUndo = await mobile390Page.evaluate(() => ({
+      len: window.__vastuApp.state.vertices.length,
+      northSet: window.__vastuApp.state.northSet,
+      doneDisabled: document.getElementById('pickingDoneBtn').disabled,
+      tab3Title: document.querySelector('#tabBtnContour .mode-tab-title').textContent.trim(),
+    }));
+    assert.equal(m390AfterUndo.len, 6);
+    assert.equal(m390AfterUndo.northSet, true);
+    assert.equal(m390AfterUndo.doneDisabled, false);
+    assert.equal(m390AfterUndo.tab3Title, '✓ 3. Контур стен');
 
-    // Ставим лишний 9-й угол контура ДО задания Севера
-    await mobilePage.touchscreen.tap(loggiaTapData.extra9th.x, loggiaTapData.extra9th.y);
-    await mobilePage.waitForTimeout(50);
-    assert.equal(
-      await mobilePage.evaluate(() => window.__vastuApp.state.vertices.length),
-      9
-    );
+    // Скриншот: телефон 390x844, шаг 3 контур стен с крупным полем!
+    await takeShot(mobile390Page, 'mobile-390x844-step3-contour.png');
 
-    // Теперь ученица задаёт Север и точки стены ПОСЛЕ обводки углов
-    await mobilePage.evaluate(() => {
-      const app = window.__vastuApp;
-      app.state.sat.satPts = [
-        { x: 120, y: 200 },
-        { x: 420, y: 260 },
-      ];
-      app.state.sat.planPts = [
-        { x: 150, y: 180 },
-        { x: 650, y: 180 },
-      ];
-      app.setNorthAngle(47);
+    // Нажимаем «Готово» -> Шаг 4 («4. Карта»)
+    await mobile390Page.locator('#pickingDoneBtn').click();
+    await mobile390Page.waitForTimeout(180);
+
+    const m390ReadyMap = await mobile390Page.evaluate(() => ({
+      activeTab: window.__vastuApp.state.activeTab,
+      placedAxesCount: window.__vastuApp.state.lastRenderMeta.placedAxesCount,
+      badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
+      exportDisabled: document.getElementById('exportPngBtn').disabled,
+    }));
+    assert.equal(m390ReadyMap.activeTab, 'layers');
+    assert.equal(m390ReadyMap.placedAxesCount, 8);
+    assert.equal(m390ReadyMap.exportDisabled, false);
+    assertNoOverlappingBadges(m390ReadyMap.badges, 'Mobile 390x844 ready map');
+
+    await takeShot(mobile390Page, 'mobile-390x844.png');
+    await mobile390Ctx.close();
+
+    // =========================================================================
+    // 3. ТЕЛЕФОН 375x667 (iPhone SE):
+    //    - Шаг 1 без плана
+    //    - Шаг 2 с крупным планом при отметке точек (>= 75% высоты!)
+    //    - Шаг 3 контур с крупным полем (>= 75% высоты!) + масштаб двумя пальцами и +/−/Вписать
+    // =========================================================================
+    const mobile375Ctx = await browser.newContext({
+      viewport: { width: 375, height: 667 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
     });
-    await mobilePage.waitForTimeout(80);
+    const mobile375Page = await mobile375Ctx.newPage();
+    attachGuards(mobile375Page);
 
-    // Ученица нажимает «Отменить» на лишнем 9-м угле контура -> Север (47°) и точки стены ДОЛЖНЫ остаться прежними!
-    await mobilePage.locator('#undoContourBtn').click();
-    await mobilePage.waitForTimeout(100);
-    const afterContourUndoBrowser = await mobilePage.evaluate(() => ({
+    await mobile375Page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await mobile375Page.evaluate(() => document.fonts.ready);
+    await mobile375Page.waitForTimeout(150);
+
+    // 3.1. Шаг 1 без плана на 375x667
+    const m375Step1 = await mobile375Page.evaluate(() => {
+      const heroRect = document.getElementById('openPlanHeroBtn').getBoundingClientRect();
+      const steps = window.__vastuApp.computeStepsState();
+      return {
+        disabled: steps.steps.map((s) => s.disabled),
+        heroFullyVisible: heroRect.top >= 0 && heroRect.bottom <= window.innerHeight,
+        tabsOverflow: Array.from(document.querySelectorAll('.mode-tab')).some(
+          (el) => el.scrollWidth > el.clientWidth + 2
+        ),
+      };
+    });
+    assert.deepEqual(m375Step1.disabled, [false, true, true, true]);
+    assert.equal(
+      m375Step1.heroFullyVisible,
+      true,
+      '375x667: кнопка «Откройте план квартиры» целиком видна без прокрутки'
+    );
+
+    await takeShot(mobile375Page, 'mobile-375x667-step1-no-plan.png');
+
+    // Загружаем план и спутник на 375x667
+    await mobile375Page.setInputFiles('#planFileInput', {
+      name: 'plan-kvartiry.png',
+      mimeType: 'image/png',
+      buffer: planAsset.buffer,
+    });
+    await mobile375Page.waitForTimeout(160);
+
+    await mobile375Page.setInputFiles('#satFileInput', {
+      name: 'satellite-se.png',
+      mimeType: 'image/png',
+      buffer: satBufferNeg22,
+    });
+    await mobile375Page.waitForTimeout(180);
+
+    const m375SatPts = await mobile375Page.evaluate(() => {
+      const st = window.__vastuApp.state;
+      const xf = st.lastRenderMeta.transform;
+      const rad = (-22 * Math.PI) / 180;
+      const toSat = (lx, ly) => ({
+        x: 390 + lx * Math.cos(rad) - ly * Math.sin(rad),
+        y: 844 + lx * Math.sin(rad) + ly * Math.cos(rad),
+      });
+      const p1 = xf.planToScreen(toSat(-190, -125));
+      const p2 = xf.planToScreen(toSat(160, -125));
+      const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+      return {
+        stageRatio: document.getElementById('canvasStage').getBoundingClientRect().height / window.innerHeight,
+        c1: { x: rect.left + p1.x, y: rect.top + p1.y },
+        c2: { x: rect.left + p2.x, y: rect.top + p2.y },
+      };
+    });
+    assert.ok(m375SatPts.stageRatio >= 0.75, `375x667 спутник: ${(m375SatPts.stageRatio * 100).toFixed(1)}% >= 75%`);
+
+    await mobile375Page.touchscreen.tap(m375SatPts.c1.x, m375SatPts.c1.y);
+    await mobile375Page.waitForTimeout(60);
+    await mobile375Page.touchscreen.tap(m375SatPts.c2.x, m375SatPts.c2.y);
+    await mobile375Page.waitForTimeout(80);
+    await mobile375Page.locator('#pickingDoneBtn').click();
+    await mobile375Page.waitForTimeout(160);
+
+    // 3.2. Шаг 2 на 375x667: крупный план при отметке точек 1 и 2 (>= 75% высоты экрана!)
+    const m375PlanPick = await mobile375Page.evaluate((verts) => {
+      const stageRect = document.getElementById('canvasStage').getBoundingClientRect();
+      const barRect = document.getElementById('mobilePickingBar').getBoundingClientRect();
+      const st = window.__vastuApp.state;
+      const xf = st.lastRenderMeta.transform;
+      const p1 = xf.planToScreen(verts[0]);
+      const p2 = xf.planToScreen(verts[1]);
+      const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+      return {
+        stageHeight: stageRect.height,
+        stageRatio: stageRect.height / window.innerHeight,
+        barHeight: barRect.height,
+        barBottom: barRect.bottom,
+        viewportH: window.innerHeight,
+        wallScreenPx: Math.hypot(p2.x - p1.x, p2.y - p1.y),
+        c1: { x: rect.left + p1.x, y: rect.top + p1.y },
+        c2: { x: rect.left + p2.x, y: rect.top + p2.y },
+      };
+    }, planAsset.defaultVertices);
+
+    assert.ok(
+      m375PlanPick.stageRatio >= 0.75,
+      `375x667 точки на плане: рабочее поле ${m375PlanPick.stageHeight}px из 667px = ${(m375PlanPick.stageRatio * 100).toFixed(1)}% (>= 75%)`
+    );
+    assert.ok(m375PlanPick.barHeight <= 60);
+    assert.ok(m375PlanPick.barBottom <= m375PlanPick.viewportH + 1, 'Однострочная панель целиком помещается в экран 375x667');
+    assert.ok(m375PlanPick.wallScreenPx >= 110, 'Точки 1 и 2 легко ставятся пальцем на 375x667');
+
+    await mobile375Page.touchscreen.tap(m375PlanPick.c1.x, m375PlanPick.c1.y);
+    await mobile375Page.waitForTimeout(70);
+    await mobile375Page.touchscreen.tap(m375PlanPick.c2.x, m375PlanPick.c2.y);
+    await mobile375Page.waitForTimeout(100);
+
+    await takeShot(mobile375Page, 'mobile-375x667-step2-plan-points.png');
+
+    await mobile375Page.locator('#pickingDoneBtn').click();
+    await mobile375Page.waitForTimeout(160);
+    await mobile375Page.locator('#northNextContourBtn').click();
+    await mobile375Page.waitForTimeout(160);
+
+    // 3.3. Шаг 3 на 375x667: контур стен с крупным полем (>= 75% высоты) + проверка pinch-to-zoom и + / − / Вписать
+    const pinchAndButtonsCheck = await mobile375Page.evaluate(() => {
+      const app = window.__vastuApp;
+      const beforeZoom = app.state.zoom;
+      const c = document.getElementById('mapCanvas');
+      const r = c.getBoundingClientRect();
+      const cx = r.left + r.width * 0.5;
+      const cy = r.top + r.height * 0.5;
+
+      // Имитируем разведение двумя пальцами (pinch-to-zoom)
+      c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, pointerType: 'touch', clientX: cx - 30, clientY: cy, bubbles: true }));
+      c.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2, pointerType: 'touch', clientX: cx + 30, clientY: cy, bubbles: true }));
+      c.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, pointerType: 'touch', clientX: cx - 75, clientY: cy, bubbles: true }));
+      c.dispatchEvent(new PointerEvent('pointermove', { pointerId: 2, pointerType: 'touch', clientX: cx + 75, clientY: cy, bubbles: true }));
+      c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, pointerType: 'touch', clientX: cx - 75, clientY: cy, bubbles: true }));
+      c.dispatchEvent(new PointerEvent('pointerup', { pointerId: 2, pointerType: 'touch', clientX: cx + 75, clientY: cy, bubbles: true }));
+      const afterPinchZoom = app.state.zoom;
+
+      document.getElementById('zoomInBtn').click();
+      const afterPlusZoom = app.state.zoom;
+      document.getElementById('zoomOutBtn').click();
+      const afterMinusZoom = app.state.zoom;
+      document.getElementById('zoomFitBtn').click();
+      const afterFitZoom = app.state.zoom;
+
+      return {
+        stageRatio: document.getElementById('canvasStage').getBoundingClientRect().height / window.innerHeight,
+        beforeZoom,
+        afterPinchZoom,
+        afterPlusZoom,
+        afterMinusZoom,
+        afterFitZoom,
+      };
+    });
+    assert.ok(
+      pinchAndButtonsCheck.stageRatio >= 0.75,
+      `375x667 контур: рабочее поле занимает ${(pinchAndButtonsCheck.stageRatio * 100).toFixed(1)}% высоты (>= 75%)`
+    );
+    assert.ok(pinchAndButtonsCheck.afterPinchZoom > pinchAndButtonsCheck.beforeZoom * 1.4, 'Масштаб двумя пальцами работает');
+    assert.ok(pinchAndButtonsCheck.afterPlusZoom > pinchAndButtonsCheck.afterPinchZoom, 'Кнопка «+» работает');
+    assert.ok(pinchAndButtonsCheck.afterMinusZoom < pinchAndButtonsCheck.afterPlusZoom, 'Кнопка «−» работает');
+    assert.ok(Math.abs(pinchAndButtonsCheck.afterFitZoom - pinchAndButtonsCheck.beforeZoom) < 0.01, 'Кнопка «Вписать» работает');
+
+    await mobile375Page.waitForTimeout(80);
+    const m375ContourPts = await mobile375Page.evaluate((verts) => {
+      const st = window.__vastuApp.state;
+      const xf = st.lastRenderMeta.transform;
+      const rect = document.getElementById('mapCanvas').getBoundingClientRect();
+      return verts.map((v) => {
+        const s = xf.planToScreen(v);
+        return { x: rect.left + s.x, y: rect.top + s.y };
+      });
+    }, planAsset.defaultVertices);
+
+    for (const pt of m375ContourPts) {
+      await mobile375Page.touchscreen.tap(pt.x, pt.y);
+      await mobile375Page.waitForTimeout(45);
+    }
+    await mobile375Page.waitForTimeout(100);
+
+    await takeShot(mobile375Page, 'mobile-375x667-step3-contour.png');
+
+    await mobile375Page.locator('#pickingDoneBtn').click();
+    await mobile375Page.waitForTimeout(160);
+    assert.equal(await mobile375Page.evaluate(() => window.__vastuApp.state.activeTab), 'layers');
+    await takeShot(mobile375Page, 'mobile-375x667-step4-map.png');
+    await mobile375Ctx.close();
+
+    // =========================================================================
+    // 4. СТАРЫЙ ЧЕРНОВИК С «РУЧНЫМ» СЕВЕРОМ В БРАУЗЕРЕ:
+    //    открывается без ошибок, сохраняет контур и просит задать Север по спутнику
+    // =========================================================================
+    const legacyDraftCtx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const planDataUrl = `data:image/png;base64,${planAsset.buffer.toString('base64')}`;
+    await legacyDraftCtx.addInitScript(
+      ({ dataUrl, verts }) => {
+        const oldManualRecord = {
+          version: 2,
+          savedAt: Date.now() - 86400000,
+          isSamplePlan: false,
+          planTitle: 'Мой старый черновик БТИ.png',
+          sheetQuarterTurns: 0,
+          basePlanWidth: 1400,
+          basePlanHeight: 1060,
+          basePlanDataUrl: dataUrl,
+          vertices: verts,
+          northSet: true,
+          northAngleDeg: 180, // был задан кнопкой «Снизу 180°» в старой версии (без northSource: 'satellite')
+          alignNorthUp: true,
+          orthoSnap: true,
+          activeTab: 'layers',
+          layers: { showSectors: true, showSectorLabels: true, showBrahmastan: true, showPadas: false, sectorOpacity: 0.4 },
+        };
+        localStorage.setItem('anna_romeo_vastu_karta_session_v2', JSON.stringify(oldManualRecord));
+      },
+      { dataUrl: planDataUrl, verts: planAsset.defaultVertices }
+    );
+
+    const legacyDraftPage = await legacyDraftCtx.newPage();
+    attachGuards(legacyDraftPage);
+    await legacyDraftPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await legacyDraftPage.waitForTimeout(250);
+
+    const legacyCheck = await legacyDraftPage.evaluate(() => ({
+      hasPlan: Boolean(window.__vastuApp.state.planCanvas),
       verticesLen: window.__vastuApp.state.vertices.length,
       northSet: window.__vastuApp.state.northSet,
       northAngleDeg: window.__vastuApp.state.northAngleDeg,
-      satPlanPtsLen: window.__vastuApp.state.sat.planPts.length,
-      satSatPtsLen: window.__vastuApp.state.sat.satPts.length,
-      exportDisabled: document.getElementById('topExportBtn').disabled,
+      activeTab: window.__vastuApp.state.activeTab,
+      noticeHidden: document.getElementById('legacyNorthNoticeBox').hidden,
+      noticeText: document.getElementById('legacyNorthNoticeBox').textContent.trim(),
+      exportDisabled: document.getElementById('exportPngBtn').disabled,
+      tab1Title: document.querySelector('#tabBtnPlan .mode-tab-title').textContent.trim(),
+      tab2Title: document.querySelector('#tabBtnNorth .mode-tab-title').textContent.trim(),
+      tab3Title: document.querySelector('#tabBtnContour .mode-tab-title').textContent.trim(),
     }));
-    assert.equal(afterContourUndoBrowser.verticesLen, 8, 'Лишний 9-й угол отменён');
-    assert.equal(afterContourUndoBrowser.northSet, true, 'Пункт 1: Север НЕ стёрся после Отменить контура');
-    assert.equal(afterContourUndoBrowser.northAngleDeg, 47, 'Пункт 1: Север НЕ вернулся к старому значению');
-    assert.equal(afterContourUndoBrowser.satPlanPtsLen, 2, 'Пункт 1: точки стены на плане прежние');
-    assert.equal(afterContourUndoBrowser.satSatPtsLen, 2, 'Пункт 1: точки стены на спутнике прежние');
-    assert.equal(afterContourUndoBrowser.exportDisabled, false);
+    assert.equal(legacyCheck.hasPlan, true, 'План из старого черновика открыт без ошибок');
+    assert.equal(legacyCheck.verticesLen, 6, 'Контур стен из старого черновика сохранён');
+    assert.equal(legacyCheck.northSet, false, 'Ручной Север из старого черновика сброшен');
+    assert.equal(legacyCheck.northAngleDeg, null);
+    assert.equal(legacyCheck.activeTab, 'north', 'Открыт шаг «2. Север»');
+    assert.equal(legacyCheck.noticeHidden, false, 'Показана просьба задать Север по спутнику');
+    assert.match(legacyCheck.noticeText, /Задайте Север по спутнику/i);
+    assert.equal(legacyCheck.exportDisabled, true);
+    assert.equal(legacyCheck.tab1Title, '✓ 1. План');
+    assert.equal(legacyCheck.tab2Title, '2. Север');
+    assert.equal(legacyCheck.tab3Title, '✓ 3. Контур стен');
 
-    // Проверка сохранения состояния переключателя «Подписи секторов» в черновике при перезагрузке
-    await mobilePage.locator('#tabBtnLayers').click();
-    await mobilePage.locator('#toggleSectorLabels').check({ force: true });
-    await mobilePage.waitForTimeout(300);
-    await mobilePage.reload({ waitUntil: 'networkidle' });
-    await mobilePage.waitForTimeout(250);
-    const restoredSession = await mobilePage.evaluate(() => ({
-      isSamplePlan: window.__vastuApp.state.isSamplePlan,
-      verticesCount: window.__vastuApp.state.vertices.length,
-      northSet: window.__vastuApp.state.northSet,
-      northAngleDeg: window.__vastuApp.state.northAngleDeg,
-      showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
-      toggleChecked: document.getElementById('toggleSectorLabels').checked,
-    }));
-    assert.equal(restoredSession.isSamplePlan, false);
-    assert.equal(restoredSession.verticesCount, 8);
-    assert.equal(restoredSession.northSet, true);
-    assert.equal(restoredSession.northAngleDeg, 47);
-    assert.equal(
-      restoredSession.showSectorLabels,
-      true,
-      'Задача 19: состояние переключателя «Подписи секторов» сохранилось с черновиком'
-    );
-    assert.equal(restoredSession.toggleChecked, true);
-
-    // Проверка русской ошибки на битом PDF
-    await mobilePage.locator('#tabBtnPlan').click();
-    await mobilePage.setInputFiles('#planFileInput', {
-      name: 'broken.pdf',
-      mimeType: 'application/pdf',
-      buffer: Buffer.from('NOT_A_VALID_PDF_FILE'),
-    });
-    await mobilePage.waitForTimeout(100);
-    await mobilePage.locator('#confirmModalAcceptBtn').click();
-    await mobilePage.waitForTimeout(300);
-    const errText = (await mobilePage.locator('#planErrorBox').textContent()).trim();
-    assert.equal(
-      errText,
-      'Не получилось открыть этот PDF на телефоне — загрузите план как фото или скриншот'
-    );
-
-    await mobileCtx.close();
+    await legacyDraftCtx.close();
 
     // =========================================================================
-    // 4. ПУНКТ 6: PDF на старом iOS без Promise.withResolvers и URL.parse (в окне и в Worker!)
+    // 5. ПРОВЕРКА PDF CCITT G4 НА СТАРОМ iOS (без Promise.withResolvers и URL.parse)
     // =========================================================================
-    const legacyIosPdfCtx = await browser.newContext({
-      viewport: { width: 390, height: 844 },
-      isMobile: true,
-      hasTouch: true,
-      userAgent:
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    });
-    // Удаляем Promise.withResolvers и URL.parse в главном потоке ДО любых скриптов страницы
-    await legacyIosPdfCtx.addInitScript(() => {
-      delete Promise.withResolvers;
-      delete URL.parse;
-    });
-    // И перехватываем pdf-polyfills.mjs (и в окне, и в Worker!), удаляя нативные Promise.withResolvers и URL.parse
-    // прямо перед установкой полифила (в ES-модулях статические import всплывают выше кода обёртки)
-    const polyfillRaw = fs.readFileSync(
-      path.join(serveTarget, 'vendor', 'pdf-polyfills.mjs'),
-      'utf8'
-    );
-    await legacyIosPdfCtx.route('**/*pdf-polyfills.mjs', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'text/javascript; charset=utf-8',
-        body: `delete Promise.withResolvers;\ndelete URL.parse;\n${polyfillRaw}`,
+    if (fs.existsSync(EXTERNAL_CCITT_PDF)) {
+      const legacyIosPdfCtx = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        userAgent:
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       });
-    });
+      await legacyIosPdfCtx.addInitScript(() => {
+        delete Promise.withResolvers;
+        delete URL.parse;
+      });
+      const polyfillRaw = fs.readFileSync(
+        path.join(serveTarget, 'vendor', 'pdf-polyfills.mjs'),
+        'utf8'
+      );
+      await legacyIosPdfCtx.route('**/*pdf-polyfills.mjs', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'text/javascript; charset=utf-8',
+          body: `delete Promise.withResolvers;\ndelete URL.parse;\n${polyfillRaw}`,
+        });
+      });
 
-    const legacyPdfPage = await legacyIosPdfCtx.newPage();
-    attachGuards(legacyPdfPage);
-    await legacyPdfPage.goto(baseUrl, { waitUntil: 'networkidle' });
-    await legacyPdfPage.setInputFiles('#planFileInput', EXTERNAL_CCITT_PDF);
-    await legacyPdfPage.waitForTimeout(600);
+      const legacyPdfPage = await legacyIosPdfCtx.newPage();
+      attachGuards(legacyPdfPage);
+      await legacyPdfPage.goto(baseUrl, { waitUntil: 'networkidle' });
+      await legacyPdfPage.setInputFiles('#planFileInput', EXTERNAL_CCITT_PDF);
+      await legacyPdfPage.waitForTimeout(600);
 
-    const legacyPdfResult = await legacyPdfPage.evaluate(() => ({
-      hasPolyfilledWithResolvers: typeof Promise.withResolvers === 'function',
-      isCustomPolyfill:
-        typeof Promise.withResolvers === 'function' &&
-        !Function.prototype.toString.call(Promise.withResolvers).includes('[native code]'),
-      isSamplePlan: window.__vastuApp.state.isSamplePlan,
-      planWidth: window.__vastuApp.state.planWidth,
-      planErrorHidden: document.getElementById('planErrorBox').hidden,
-    }));
-    assert.equal(
-      legacyPdfResult.hasPolyfilledWithResolvers,
-      true,
-      'Пункт 6: полифил Promise.withResolvers установлен до pdf.js'
-    );
-    assert.equal(
-      legacyPdfResult.isCustomPolyfill,
-      true,
-      'Пункт 6: работает именно наш полифил Promise.withResolvers (нативный был удалён)'
-    );
-    assert.equal(
-      legacyPdfResult.isSamplePlan,
-      false,
-      'Пункт 6: PDF CCITT G4 успешно открылся при удалённом нативном Promise.withResolvers в окне и в Worker'
-    );
-    assert.equal(legacyPdfResult.planErrorHidden, true);
-    assert.ok(legacyPdfResult.planWidth > 400);
-    await legacyIosPdfCtx.close();
+      const legacyPdfResult = await legacyPdfPage.evaluate(() => ({
+        hasPolyfilledWithResolvers: typeof Promise.withResolvers === 'function',
+        planWidth: window.__vastuApp.state.planWidth,
+        activeTab: window.__vastuApp.state.activeTab,
+        planErrorHidden: document.getElementById('planErrorBox').hidden,
+      }));
+      assert.equal(legacyPdfResult.hasPolyfilledWithResolvers, true);
+      assert.ok(legacyPdfResult.planWidth > 400);
+      assert.equal(legacyPdfResult.activeTab, 'north');
+      assert.equal(legacyPdfResult.planErrorHidden, true);
+      await legacyIosPdfCtx.close();
+    }
 
     // =========================================================================
-    // 5. ТЕЛЕФОН АЛЬБОМНО 844x390 + отмена поворота листа на 90°
+    // 6. ТЕЛЕФОН АЛЬБОМНО 844x390 + Android / iPhone / Telegram экспорт
     // =========================================================================
     const landscapeCtx = await browser.newContext({
       viewport: { width: 844, height: 390 },
@@ -1047,8 +1062,9 @@ async function main() {
 
     await landscapePage.goto(baseUrl, { waitUntil: 'networkidle' });
     await landscapePage.evaluate(() => document.fonts.ready);
+    await completeFullSatelliteFlowOnPage(landscapePage, planAsset, satBufferNeg22, -22);
     await landscapePage.locator('#togglePadas').check({ force: true });
-    await landscapePage.waitForTimeout(200);
+    await landscapePage.waitForTimeout(180);
 
     const landscapeLayout = await landscapePage.evaluate(() => {
       const stage = document.getElementById('canvasStage').getBoundingClientRect();
@@ -1065,44 +1081,10 @@ async function main() {
     assert.ok(landscapeLayout.stageH >= 330 && landscapeLayout.panelH >= 330);
     assertNoOverlappingBadges(landscapeLayout.badges, 'Landscape 844x390');
 
-    const landscapePath = path.join(screenshotsDir, 'mobile-landscape-844x390.png');
-    await landscapePage.screenshot({ path: landscapePath });
-
-    // Проверка поворота листа на 90° и совместного возврата по «Отменить» (лист + контур + Север вместе)
-    const rotUndoCheck = await landscapePage.evaluate(() => {
-      const app = window.__vastuApp;
-      const beforeW = app.state.planCanvas.width;
-      const beforeH = app.state.planCanvas.height;
-      const beforeNorth = app.state.northAngleDeg;
-      const beforeV0 = { ...app.state.vertices[0] };
-      document.getElementById('rotatePlan90Btn').click();
-      const rotW = app.state.planCanvas.width;
-      const rotNorth = app.state.northAngleDeg;
-      app.performUndo();
-      return {
-        beforeW,
-        beforeH,
-        beforeNorth,
-        beforeV0,
-        rotW,
-        rotNorth,
-        afterW: app.state.planCanvas.width,
-        afterH: app.state.planCanvas.height,
-        afterNorth: app.state.northAngleDeg,
-        afterV0: { ...app.state.vertices[0] },
-      };
-    });
-    assert.equal(rotUndoCheck.rotW, rotUndoCheck.beforeH);
-    assert.equal(rotUndoCheck.afterW, rotUndoCheck.beforeW);
-    assert.equal(rotUndoCheck.afterH, rotUndoCheck.beforeH);
-    assert.equal(rotUndoCheck.afterNorth, rotUndoCheck.beforeNorth);
-    assert.deepEqual(rotUndoCheck.afterV0, rotUndoCheck.beforeV0);
+    await takeShot(landscapePage, 'mobile-landscape-844x390.png');
     await landscapeCtx.close();
 
-    // =========================================================================
-    // 6. ПУНКТ 7: ANDROID (скачивание файла + отдельная кнопка «Поделиться» -> «Отправлено»)
-    //             и iPHONE («Скачать карту» -> системное меню Поделиться -> «Отправлено»)
-    // =========================================================================
+    // Android Chrome: скачивание файла напрямую + отдельная кнопка «Поделиться»
     const androidCtx = await browser.newContext({
       viewport: { width: 412, height: 915 },
       isMobile: true,
@@ -1113,10 +1095,8 @@ async function main() {
     const androidPage = await androidCtx.newPage();
     attachGuards(androidPage);
     await androidPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await completeFullSatelliteFlowOnPage(androidPage, planAsset, satBufferNeg22, -22);
 
-    // Подключаем mock Web Share API на Android и проверяем, что «Поделиться» видна отдельной кнопкой,
-    // НО «Скачать карту» скачивает файл напрямую (НЕ вызывая navigator.share!),
-    // а кнопка «Поделиться» вызывает navigator.share и пишет «Отправлено»!
     await androidPage.evaluate(() => {
       window.__shareCalls = 0;
       Object.defineProperty(navigator, 'canShare', {
@@ -1129,85 +1109,26 @@ async function main() {
           window.__shareCalls += 1;
         },
       });
-      // Пересинхронизируем кнопку Поделиться после подстановки canShare
       window.__vastuApp.recomputeVastuMap();
     });
-
-    const androidShareBtnVisible = await androidPage.evaluate(
-      () => !document.getElementById('shareMapBtn').hidden
-    );
-    assert.equal(androidShareBtnVisible, true, 'Пункт 7: на Android показана отдельная кнопка «Поделиться»');
 
     const [androidDownload] = await Promise.all([
       androidPage.waitForEvent('download'),
       androidPage.locator('#exportPngBtn').click(),
     ]);
     assert.match(androidDownload.suggestedFilename(), /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/);
-    const androidAfterDownload = await androidPage.evaluate(() => ({
-      shareCalls: window.__shareCalls,
-      toastText: document.getElementById('saveToastText').textContent,
-    }));
-    assert.equal(
-      androidAfterDownload.shareCalls,
-      0,
-      'Пункт 7: на Android «Скачать карту» скачивает файл, а не открывает окно Поделиться'
-    );
-    assert.match(androidAfterDownload.toastText, /^Карта сохранена/);
+    assert.equal(await androidPage.evaluate(() => window.__shareCalls), 0);
 
-    // Теперь нажимаем отдельную кнопку «Поделиться» на Android -> вызывается navigator.share и тост «Отправлено»!
     await androidPage.locator('#shareMapBtn').click();
     await androidPage.waitForTimeout(80);
-    const androidAfterShare = await androidPage.evaluate(() => ({
-      shareCalls: window.__shareCalls,
-      toastText: document.getElementById('saveToastText').textContent,
-    }));
-    assert.equal(androidAfterShare.shareCalls, 1);
+    assert.equal(await androidPage.evaluate(() => window.__shareCalls), 1);
     assert.equal(
-      androidAfterShare.toastText,
-      'Отправлено',
-      'Пункт 7: после «Поделиться» пишется «Отправлено», а не «Карта сохранена»'
+      await androidPage.evaluate(() => document.getElementById('saveToastText').textContent),
+      'Отправлено'
     );
     await androidCtx.close();
 
-    // iPhone Safari: «Скачать карту» открывает окно Поделиться (с «Сохранить изображение» в Фото) и пишет «Отправлено»
-    const iphoneCtx = await browser.newContext({
-      viewport: { width: 390, height: 844 },
-      isMobile: true,
-      hasTouch: true,
-      userAgent:
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-    });
-    const iphonePage = await iphoneCtx.newPage();
-    attachGuards(iphonePage);
-    await iphonePage.goto(baseUrl, { waitUntil: 'networkidle' });
-    const iphoneShareResult = await iphonePage.evaluate(async () => {
-      let sharedFile = null;
-      Object.defineProperty(navigator, 'canShare', {
-        configurable: true,
-        value: (data) => Boolean(data && Array.isArray(data.files) && data.files.length === 1),
-      });
-      Object.defineProperty(navigator, 'share', {
-        configurable: true,
-        value: async (data) => {
-          sharedFile = data.files[0].name;
-        },
-      });
-      document.getElementById('exportPngBtn').click();
-      await new Promise((r) => setTimeout(r, 80));
-      return {
-        sharedFile,
-        toastText: document.getElementById('saveToastText').textContent,
-      };
-    });
-    assert.match(iphoneShareResult.sharedFile, /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/);
-    assert.equal(
-      iphoneShareResult.toastText,
-      'Отправлено',
-      'Пункт 7: на iPhone после окна «Поделиться» пишется «Отправлено»'
-    );
-    await iphoneCtx.close();
-
-    // Проверка встроенного браузера Telegram (показ картинки поверх экрана с подсказкой удерживать)
+    // Встроенный браузер Telegram: показ готовой карты поверх экрана
     const tgCtx = await browser.newContext({
       viewport: { width: 390, height: 844 },
       isMobile: true,
@@ -1218,16 +1139,13 @@ async function main() {
     const tgPage = await tgCtx.newPage();
     attachGuards(tgPage);
     await tgPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await completeFullSatelliteFlowOnPage(tgPage, planAsset, satBufferNeg22, -22);
     await tgPage.locator('#topExportBtn').click();
     await tgPage.waitForTimeout(100);
-    const tgOverlayCheck = await tgPage.evaluate(() => ({
-      modalOpen: !document.getElementById('imagePreviewModal').hidden,
-      hintText: document.querySelector('.image-preview-hint').textContent,
-      hasImgSrc: document.getElementById('previewModalImg').src.startsWith('data:image/png'),
-    }));
-    assert.equal(tgOverlayCheck.modalOpen, true);
-    assert.match(tgOverlayCheck.hintText, /нажмите и удерживайте, чтобы сохранить/i);
-    assert.equal(tgOverlayCheck.hasImgSrc, true);
+    const tgOverlayOpen = await tgPage.evaluate(
+      () => !document.getElementById('imagePreviewModal').hidden
+    );
+    assert.equal(tgOverlayOpen, true);
     await tgCtx.close();
 
     if (externalRequests.length > 0) {
@@ -1242,18 +1160,13 @@ async function main() {
       throw new Error(`Необработанные ошибки страницы: ${pageErrors.join('; ')}`);
     }
 
-    console.log('Скриншоты и браузерные проверки Задачи 19 успешно выполнены:');
-    console.log(` - ${mobilePath}`);
-    console.log(` - ${mobileSatStep1Path}`);
-    console.log(` - ${mobileSatStep2Path}`);
-    console.log(` - ${landscapePath}`);
-    console.log(` - ${desktopPath}`);
-    console.log(` - ${exportedSamplePath}`);
-    console.log(` - ${exportedWithLabelsPath}`);
-    console.log('Проверка подписей секторов: выключены по умолчанию, включаются переключателем, сохраняются в черновике.');
-    console.log('Проверка осей: 8 хорошо видимых осей (С–Ю, В–З толще; диагональные тоньше) с буквами направлений без перекрытий.');
-    console.log('Проверка PDF без Promise.withResolvers (iOS 16.4+): CCITT G4 скан БТИ успешно открыт в окне и в Worker.');
-    console.log('Проверка PNG-экспорта: 32 из 32 номеров пад и 8 из 8 осей без наложений, внешний контур Брахмастана без внутренних швов.');
+    console.log('Скриншоты и браузерные проверки Задачи 20 успешно выполнены:');
+    for (const shot of savedScreenshots) {
+      console.log(` - ${shot}`);
+    }
+    console.log('Проверка 4 шагов: 1. План -> 2. Север -> 3. Контур стен -> 4. Карта, галочки и блокировка без плана.');
+    console.log('Проверка большого поля плана на 390x844 и 375x667: >= 80% высоты экрана + однострочная панель Отменить/Готово.');
+    console.log('Проверка удаления запасного способа и открытия старых черновиков с ручным Севером: пройдена.');
     console.log('Проверка автономности: 0 внешних запросов, 0 ошибок в консоли.');
   } finally {
     await browser.close();

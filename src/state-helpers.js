@@ -1,8 +1,9 @@
 /**
  * Чистые вспомогательные функции состояния:
+ * - порядок 4 шагов («1. План», «2. Север», «3. Контур стен», «4. Карта»), блокировка шагов 2–4 без плана и отметка завершённых шагов;
  * - раздельная история «Отменить» (правки контура трогают только углы контура, поворот листа возвращает лист, контур и Север вместе);
  * - проверка минимальной экранной длины стены на спутнике и плане (~100 px);
- * - порог настоящего поворота стрелки «С» (> 3°);
+ * - восстановление черновиков (старые черновики с «ручным» Севером открываются без ошибок и просят задать Север по спутнику);
  * - классификация касаний на коротких стенах и безопасное выравнивание 90° без схлопывания углов;
  * - строка поворота дома относительно сторон света (±45° по модулю 90°);
  * - определение способа сохранения (Android — скачивание файла + отдельная кнопка «Поделиться», iPhone — системное меню).
@@ -11,13 +12,167 @@
 import { normalizeDeg, distance } from './geometry.js';
 
 export const MIN_WALL_SEGMENT_SCREEN_PX = 100;
-export const MIN_NORTH_HANDLE_TURN_DEG = 3;
 export const MIN_NEW_CORNER_DIST_PX = 11;
 export const VERTEX_DRAG_START_PX = 5;
+export const VALID_STEP_TABS = ['plan', 'north', 'contour', 'layers'];
+export const STEP_LOCKED_CAPTION = 'сначала шаг 1';
 
 export function clonePointList(pts) {
   if (!Array.isArray(pts)) return [];
   return pts.map((p) => ({ x: p.x, y: p.y }));
+}
+
+/**
+ * Вычисляет доступность, подсветку и завершённость 4 шагов конструктора:
+ * 1. План -> 2. Север -> 3. Контур стен -> 4. Карта.
+ * Пока плана нет, шаги 2–4 недоступны с подписью «сначала шаг 1».
+ */
+export function computeStepsState(state = {}) {
+  const hasPlan = Boolean(state && state.planCanvas);
+  const hasNorth = Boolean(
+    hasPlan &&
+      state.northSet &&
+      (!state.northSource || state.northSource === 'satellite') &&
+      Number.isFinite(state.northAngleDeg)
+  );
+  const hasValidContour = Boolean(
+    hasPlan &&
+      Array.isArray(state.vertices) &&
+      state.vertices.length >= 3 &&
+      state.vastuMap &&
+      !state.vastuMap.selfIntersects
+  );
+  const canShowMap = Boolean(hasPlan && hasNorth && hasValidContour);
+  const mapCompleted = Boolean(canShowMap && state.mapExported);
+
+  const requestedTab = state && VALID_STEP_TABS.includes(state.activeTab)
+    ? state.activeTab
+    : 'plan';
+  const activeTab = hasPlan ? requestedTab : 'plan';
+
+  const satViewMode = state?.satViewMode || 'idle';
+  const isPointPicking = Boolean(
+    hasPlan &&
+      ((activeTab === 'north' &&
+        (satViewMode === 'sat' || satViewMode === 'plan-pick')) ||
+        activeTab === 'contour')
+  );
+
+  return {
+    activeTab,
+    hasPlan,
+    hasNorth,
+    hasValidContour,
+    canShowMap,
+    isPointPicking,
+    steps: [
+      {
+        id: 'plan',
+        number: 1,
+        baseTitle: '1. План',
+        displayTitle: hasPlan ? '✓ 1. План' : '1. План',
+        completed: hasPlan,
+        disabled: false,
+        lockedCaption: '',
+        active: activeTab === 'plan',
+      },
+      {
+        id: 'north',
+        number: 2,
+        baseTitle: '2. Север',
+        displayTitle: hasNorth ? '✓ 2. Север' : '2. Север',
+        completed: hasNorth,
+        disabled: !hasPlan,
+        lockedCaption: hasPlan ? '' : STEP_LOCKED_CAPTION,
+        active: activeTab === 'north',
+      },
+      {
+        id: 'contour',
+        number: 3,
+        baseTitle: '3. Контур стен',
+        displayTitle: hasValidContour ? '✓ 3. Контур стен' : '3. Контур стен',
+        completed: hasValidContour,
+        disabled: !hasPlan,
+        lockedCaption: hasPlan ? '' : STEP_LOCKED_CAPTION,
+        active: activeTab === 'contour',
+      },
+      {
+        id: 'layers',
+        number: 4,
+        baseTitle: '4. Карта',
+        displayTitle: mapCompleted ? '✓ 4. Карта' : '4. Карта',
+        completed: mapCompleted,
+        disabled: !hasPlan,
+        lockedCaption: hasPlan ? '' : STEP_LOCKED_CAPTION,
+        active: activeTab === 'layers',
+      },
+    ],
+  };
+}
+
+/**
+ * Проверяет и нормализует сохранённый черновик сессии.
+ * Север в приложении задаётся ТОЛЬКО по спутнику (northSource === 'satellite').
+ * Если открывается старый черновик, где Север был задан запасным («ручным») способом
+ * (northSet === true без northSource === 'satellite'), черновик открывается без ошибок,
+ * план и контур сохраняются, а ученица переводится на шаг «2. Север» с просьбой задать Север по спутнику.
+ */
+export function normalizeRestoredDraft(saved) {
+  if (!saved || typeof saved !== 'object' || saved.version !== 2) {
+    return { hasDraft: false };
+  }
+
+  const hasSavedImage = Boolean(
+    saved.isSamplePlan ||
+      (typeof saved.basePlanDataUrl === 'string' && saved.basePlanDataUrl.length > 0)
+  );
+  if (!hasSavedImage || !Array.isArray(saved.vertices)) {
+    return { hasDraft: false };
+  }
+
+  const isSatelliteNorth = Boolean(
+    saved.northSource === 'satellite' &&
+      saved.northSet &&
+      Number.isFinite(saved.northAngleDeg)
+  );
+  const hadLegacyManualNorth = Boolean(
+    saved.northSet && saved.northSource !== 'satellite'
+  );
+
+  let activeTab = VALID_STEP_TABS.includes(saved.activeTab)
+    ? saved.activeTab
+    : 'north';
+
+  if (hadLegacyManualNorth) {
+    activeTab = 'north';
+  } else if (!isSatelliteNorth && activeTab === 'layers') {
+    activeTab = 'north';
+  }
+
+  return {
+    hasDraft: true,
+    isSamplePlan: Boolean(saved.isSamplePlan),
+    sampleModified: Boolean(saved.sampleModified),
+    planTitle: saved.planTitle || 'План квартиры',
+    sheetQuarterTurns: (((saved.sheetQuarterTurns || 0) % 4) + 4) % 4,
+    basePlanWidth: saved.basePlanWidth || 0,
+    basePlanHeight: saved.basePlanHeight || 0,
+    basePlanDataUrl: saved.isSamplePlan ? null : saved.basePlanDataUrl,
+    vertices: clonePointList(saved.vertices),
+    satPlanPts: isSatelliteNorth ? clonePointList(saved.satPlanPts || []) : [],
+    satHouseTiltDeg:
+      isSatelliteNorth && Number.isFinite(saved.satHouseTiltDeg)
+        ? saved.satHouseTiltDeg
+        : null,
+    northSet: isSatelliteNorth,
+    northSource: isSatelliteNorth ? 'satellite' : null,
+    northAngleDeg: isSatelliteNorth ? normalizeDeg(saved.northAngleDeg) : null,
+    needsSatelliteNorthPrompt: hadLegacyManualNorth,
+    alignNorthUp: typeof saved.alignNorthUp === 'boolean' ? saved.alignNorthUp : true,
+    orthoSnap: typeof saved.orthoSnap === 'boolean' ? saved.orthoSnap : true,
+    activeTab,
+    layers: restoreSavedLayers(saved.layers),
+  };
 }
 
 /**
@@ -47,6 +202,7 @@ export function applySheetRotation90CW(current) {
     vertices: rotatePoints90CW(current.vertices || [], oldHeight),
     satPlanPts: rotatePoints90CW(current.satPlanPts || [], oldHeight),
     northSet: hasNorth,
+    northSource: hasNorth ? current.northSource || 'satellite' : null,
     northAngleDeg: hasNorth ? normalizeDeg(current.northAngleDeg + 90) : null,
   };
 }
@@ -67,6 +223,7 @@ export function createUndoHistory(maxEntries = 40) {
   }
 
   function serializeSheetRotate(s) {
+    const hasNorth = Boolean(s.northSet && Number.isFinite(s.northAngleDeg));
     return {
       kind: 'sheet-rotate',
       sheetQuarterTurns: s.sheetQuarterTurns || 0,
@@ -74,11 +231,9 @@ export function createUndoHistory(maxEntries = 40) {
       planHeight: s.planHeight || 0,
       vertices: clonePointList(s.vertices || []),
       satPlanPts: clonePointList(s.satPlanPts || []),
-      northSet: Boolean(s.northSet),
-      northAngleDeg:
-        s.northSet && Number.isFinite(s.northAngleDeg)
-          ? normalizeDeg(s.northAngleDeg)
-          : null,
+      northSet: hasNorth,
+      northSource: hasNorth ? s.northSource || 'satellite' : null,
+      northAngleDeg: hasNorth ? normalizeDeg(s.northAngleDeg) : null,
     };
   }
 
@@ -128,6 +283,7 @@ export function applyUndoEntry(current, entry) {
   if (!entry) return null;
 
   if (entry.kind === 'contour') {
+    const hasNorth = Boolean(current.northSet && Number.isFinite(current.northAngleDeg));
     return {
       kind: 'contour',
       turnsChanged: false,
@@ -137,15 +293,14 @@ export function applyUndoEntry(current, entry) {
       vertices: clonePointList(entry.vertices),
       satPlanPts: clonePointList(current.satPlanPts || []),
       satSatPts: clonePointList(current.satSatPts || []),
-      northSet: Boolean(current.northSet),
-      northAngleDeg:
-        current.northSet && Number.isFinite(current.northAngleDeg)
-          ? normalizeDeg(current.northAngleDeg)
-          : null,
+      northSet: hasNorth,
+      northSource: hasNorth ? current.northSource || 'satellite' : null,
+      northAngleDeg: hasNorth ? normalizeDeg(current.northAngleDeg) : null,
     };
   }
 
   const turnsChanged = entry.sheetQuarterTurns !== (current.sheetQuarterTurns || 0);
+  const entryHasNorth = Boolean(entry.northSet && Number.isFinite(entry.northAngleDeg));
   return {
     kind: 'sheet-rotate',
     turnsChanged,
@@ -155,17 +310,15 @@ export function applyUndoEntry(current, entry) {
     vertices: clonePointList(entry.vertices || []),
     satPlanPts: clonePointList(entry.satPlanPts || []),
     satSatPts: clonePointList(current.satSatPts || []),
-    northSet: Boolean(entry.northSet),
-    northAngleDeg:
-      entry.northSet && Number.isFinite(entry.northAngleDeg)
-        ? normalizeDeg(entry.northAngleDeg)
-        : null,
+    northSet: entryHasNorth,
+    northSource: entryHasNorth ? entry.northSource || 'satellite' : null,
+    northAngleDeg: entryHasNorth ? normalizeDeg(entry.northAngleDeg) : null,
   };
 }
 
 /**
- * Пункт 2: вычисляет экранный угол поворота плана (в градусах).
- * - На шаге «2. На плане» (satViewMode === 'plan-pick') лист не повёрнут (0°), чтобы удобно ставить и править точки 1 и 2.
+ * Вычисляет экранный угол поворота плана (в градусах).
+ * - На этапе отметки точек стены на плане (satViewMode === 'plan-pick') лист не повёрнут (0°).
  * - Во время любого перетаскивания (frozenRotationDeg числовой) угол экрана заморожен на всё время жеста.
  * - В обычном виде при alignNorthUp и заданном Севере план повёрнут на -northAngleDeg.
  */
@@ -178,7 +331,11 @@ export function computePlanViewRotationDeg({
   alignNorthUp = true,
   frozenRotationDeg = null,
 } = {}) {
-  if (!isExport && activeTab === 'plan' && satViewMode === 'plan-pick') {
+  if (
+    !isExport &&
+    (((activeTab === 'north' || activeTab === 'plan') && satViewMode === 'plan-pick') ||
+      activeTab === 'contour')
+  ) {
     return 0;
   }
   if (!isExport && frozenRotationDeg !== null && Number.isFinite(frozenRotationDeg)) {
@@ -192,19 +349,15 @@ export function computePlanViewRotationDeg({
 }
 
 /**
- * Пункт 2: выбирает цель касания во вкладке «План и север»:
- * - «С» всегда проверяется раньше любых маркеров стены;
- * - точки «1» и «2» на плане можно перетаскивать ТОЛЬКО во вкладке «2. На плане» (satViewMode === 'plan-pick');
+ * Выбирает цель касания во вкладке «2. Север»:
+ * - ручного поворота стрелки «С» НЕТ (Север задаётся только по спутнику);
+ * - точки «1» и «2» на плане можно перетаскивать ТОЛЬКО на этапе отметки на плане (satViewMode === 'plan-pick');
  *   в виде «Проверка «С»» (satViewMode === 'done') они только для показа!
  */
 export function resolvePlanTabHitAction({
-  hitNorthHandle = false,
   satViewMode = 'idle',
   hitPlanWallPointIndex = -1,
 } = {}) {
-  if (hitNorthHandle) {
-    return { action: 'rotate-north', pointIndex: -1 };
-  }
   if (satViewMode === 'plan-pick' && hitPlanWallPointIndex >= 0) {
     return { action: 'drag-plan-wall-pt', pointIndex: hitPlanWallPointIndex };
   }
@@ -233,18 +386,7 @@ export function isWallSegmentLongEnoughOnScreen(
 }
 
 /**
- * Когда Север ещё не задан, касание стрелки «С» делает Север заданным только после настоящего поворота (> 3°).
- */
-export function shouldCommitNorthHandleTurn({
-  wasNorthSet = false,
-  maxAbsDeltaDeg = 0,
-} = {}) {
-  if (wasNorthSet) return true;
-  return Number(maxAbsDeltaDeg) > MIN_NORTH_HANDLE_TURN_DEG;
-}
-
-/**
- * Классифицирует одиночное касание (без перетаскивания) во вкладке «Контур стен»:
+ * Классифицирует одиночное касание (без перетаскивания) во вкладке «3. Контур стен»:
  * если касание дальше minDistPx (11 px) от всех существующих углов — добавляется новый угол;
  * если ближе — дубликат не ставится, выводится подсказка приблизить план.
  */
@@ -377,31 +519,12 @@ export function buildExportFilename(date = new Date()) {
 }
 
 /**
- * Проверяет ввод градусов Севера: допускается пустая строка во время набора
- * либо число строго в пределах [0, 360] (с точкой или запятой, без знаков + / - / e).
- */
-export function validateNorthDegreeInput(rawText) {
-  const str = String(rawText ?? '').trim();
-  if (str === '') {
-    return { ok: true, empty: true, value: null };
-  }
-  if (!/^\d+(?:[.,]\d*)?$/.test(str)) {
-    return { ok: false, empty: false, value: null };
-  }
-  const normalized = str.replace(',', '.');
-  const num = Number(normalized);
-  if (!Number.isFinite(num) || num < 0 || num > 360) {
-    return { ok: false, empty: false, value: null };
-  }
-  return { ok: true, empty: false, value: num };
-}
-
-/**
- * Разрешено ли сохранять готовую карту (нужны и замкнутый контур без самопересечений, и заданный Север).
+ * Разрешено ли сохранять готовую карту (нужны и замкнутый контур без самопересечений, и Север по спутнику).
  */
 export function canExportVastuMap(state) {
   if (!state || !state.planCanvas) return false;
   if (!state.northSet || !Number.isFinite(state.northAngleDeg)) return false;
+  if (state.northSource && state.northSource !== 'satellite') return false;
   if (!Array.isArray(state.vertices) || state.vertices.length < 3) return false;
   if (!state.vastuMap || state.vastuMap.selfIntersects) return false;
   return true;
