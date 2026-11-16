@@ -198,15 +198,20 @@ async function main() {
     await desktopPage.evaluate(() => document.fonts.ready);
     await desktopPage.waitForTimeout(150);
 
-    // Проверяем настройки по умолчанию и исправленную SVG-схему «Север по спутнику» (пункт 10)
+    // Проверяем настройки по умолчанию (Задача 19: подписи секторов выключены, 8 осей включены) и SVG-схему «Север по спутнику»
     const defaultsCheck = await desktopPage.evaluate(() => {
       const app = window.__vastuApp;
       const sub = document.getElementById('padaSuboptions');
+      const toggleLabelsEl = document.getElementById('toggleSectorLabels');
       const schemeNorthLine = document.querySelector(
         '.sat-diagram svg line[stroke-dasharray]'
       );
+      const meta = app.state.lastRenderMeta;
       return {
         alignNorthUp: app.state.alignNorthUp,
+        showSectorLabels: app.state.layers.showSectorLabels,
+        toggleLabelsChecked: toggleLabelsEl ? toggleLabelsEl.checked : null,
+        showAxes: app.state.layers.showAxes,
         showPadas: app.state.layers.showPadas,
         showPadaBelts: app.state.layers.showPadaBelts,
         showPadaScores: app.state.layers.showPadaScores,
@@ -214,9 +219,36 @@ async function main() {
         subDisplay: getComputedStyle(sub).display,
         arrowX1: Number(schemeNorthLine.getAttribute('x1')),
         arrowX2: Number(schemeNorthLine.getAttribute('x2')),
+        placedAxesCount: meta.placedAxesCount,
+        renderedAxes: meta.renderedAxes,
+        badges: meta.placedBadges,
       };
     });
     assert.equal(defaultsCheck.alignNorthUp, true, 'По умолчанию Север сверху');
+    assert.equal(
+      defaultsCheck.showSectorLabels,
+      false,
+      'Задача 19: по умолчанию подписи секторов выключены'
+    );
+    assert.equal(
+      defaultsCheck.toggleLabelsChecked,
+      false,
+      'Задача 19: переключатель «Подписи секторов» по умолчанию не отмечен'
+    );
+    assert.equal(defaultsCheck.showAxes, true, 'Задача 19: по умолчанию оси включены');
+    assert.equal(defaultsCheck.placedAxesCount, 8, 'Задача 19: размещены все 8 букв направлений осей');
+    assert.equal(
+      defaultsCheck.badges.filter((b) => b.kind === 'sector').length,
+      0,
+      'Задача 19: по умолчанию длинных подписей секторов на экране нет'
+    );
+    const cardAxisW = defaultsCheck.renderedAxes.find((a) => a.isCardinal).lineWidth;
+    const diagAxisW = defaultsCheck.renderedAxes.find((a) => !a.isCardinal).lineWidth;
+    assert.ok(
+      cardAxisW > diagAxisW,
+      `Задача 19: главные оси С–Ю и В–З толще диагональных (${cardAxisW} > ${diagAxisW})`
+    );
+    assertNoOverlappingBadges(defaultsCheck.badges, 'Desktop 1440x900 default (no sector labels)');
     assert.equal(defaultsCheck.showPadas, false);
     assert.equal(defaultsCheck.showPadaBelts, false);
     assert.equal(defaultsCheck.showPadaScores, false);
@@ -227,19 +259,111 @@ async function main() {
       `Пункт 10: на схеме «Север по спутнику» стрелка «С» должна наклоняться вправо (x1=${defaultsCheck.arrowX1}, x2=${defaultsCheck.arrowX2})`
     );
 
-    // Включаем сетку пад для демонстрации итоговой карты на скриншоте
-    await desktopPage.locator('#togglePadas').check({ force: true });
-    await desktopPage.waitForTimeout(200);
-
-    const desktopBadges = await desktopPage.evaluate(
-      () => window.__vastuApp.state.lastRenderMeta.placedBadges
-    );
-    assertNoOverlappingBadges(desktopBadges, 'Desktop 1440x900');
-
+    // Скриншот компьютера (итоговая карта по умолчанию: без подписей секторов, хорошо видные оси)
     const desktopPath = path.join(screenshotsDir, 'desktop-1440x900.png');
     await desktopPage.screenshot({ path: desktopPath });
 
-    // Скачивание итоговой карты и проверка имени файла + всех 32 номеров пад в картинке (пункт 13)
+    // 1а. Сохранённая картинка PNG БЕЗ подписей секторов (по умолчанию)
+    const exportNoLabelsCheck = await desktopPage.evaluate(async () => {
+      const mod = await import('./src/renderer.js');
+      const drawnTexts = [];
+      const origGetContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function patchedGetContext(type, ...rest) {
+        const ctx2d = origGetContext.call(this, type, ...rest);
+        if (type === '2d' && ctx2d && !ctx2d.__textHooked) {
+          const origFillText = ctx2d.fillText.bind(ctx2d);
+          ctx2d.fillText = (txt, ...args) => {
+            drawnTexts.push(String(txt));
+            return origFillText(txt, ...args);
+          };
+          ctx2d.__textHooked = true;
+        }
+        return ctx2d;
+      };
+      try {
+        const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
+        return {
+          meta: pngCanvas.__exportRenderMeta,
+          drawnTexts,
+        };
+      } finally {
+        HTMLCanvasElement.prototype.getContext = origGetContext;
+      }
+    });
+    assert.equal(
+      exportNoLabelsCheck.meta.placedBadges.filter((b) => b.kind === 'sector').length,
+      0,
+      'Задача 19: в сохранённой картинке PNG по умолчанию нет длинных подписей секторов на плане'
+    );
+    assert.equal(
+      exportNoLabelsCheck.meta.placedAxesCount,
+      8,
+      'Задача 19: в сохранённой картинке PNG размещены все 8 букв осей (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ)'
+    );
+    assert.equal(
+      exportNoLabelsCheck.drawnTexts.some((t) => t === 'С · Север'),
+      true,
+      'Задача 19: легенда внизу картинки оставлена нетронутой'
+    );
+    assertNoOverlappingBadges(exportNoLabelsCheck.meta.placedBadges, 'Exported PNG without sector labels');
+
+    const [downloadNoLabels] = await Promise.all([
+      desktopPage.waitForEvent('download'),
+      desktopPage.locator('#exportPngBtn').click(),
+    ]);
+    const suggestedName = downloadNoLabels.suggestedFilename();
+    assert.match(
+      suggestedName,
+      /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/,
+      `Неверное имя файла скачивания: ${suggestedName}`
+    );
+    const exportedSamplePath = path.join(screenshotsDir, 'exported-map-sample.png');
+    await downloadNoLabels.saveAs(exportedSamplePath);
+
+    // 1б. Включаем переключатель «Подписи секторов» -> надписи появляются на экране и в картинке PNG
+    await desktopPage.locator('#toggleSectorLabels').check({ force: true });
+    await desktopPage.waitForTimeout(180);
+
+    const withLabelsCheck = await desktopPage.evaluate(async () => {
+      const mod = await import('./src/renderer.js');
+      const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
+      return {
+        showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
+        screenBadges: window.__vastuApp.state.lastRenderMeta.placedBadges,
+        exportMeta: pngCanvas.__exportRenderMeta,
+      };
+    });
+    assert.equal(withLabelsCheck.showSectorLabels, true);
+    assert.equal(
+      withLabelsCheck.screenBadges.filter((b) => b.kind === 'sector').length,
+      8,
+      'Задача 19: при включённом переключателе все 8 подписей секторов видны на экране'
+    );
+    assert.ok(
+      withLabelsCheck.exportMeta.placedBadges.filter((b) => b.kind === 'sector').length >= 7,
+      'Задача 19: при включённом переключателе подписи секторов появляются в картинке PNG так же, как раньше'
+    );
+    assert.equal(withLabelsCheck.exportMeta.placedAxesCount, 8);
+    assertNoOverlappingBadges(withLabelsCheck.screenBadges, 'Desktop 1440x900 with sector labels');
+    assertNoOverlappingBadges(withLabelsCheck.exportMeta.placedBadges, 'Exported PNG with sector labels');
+
+    const [downloadWithLabels] = await Promise.all([
+      desktopPage.waitForEvent('download'),
+      desktopPage.locator('#exportPngBtn').click(),
+    ]);
+    const exportedWithLabelsPath = path.join(screenshotsDir, 'exported-map-with-labels.png');
+    await downloadWithLabels.saveAs(exportedWithLabelsPath);
+
+    // 1в. Проверка совместной работы 8 осей и всех 32 номеров пад (и без подписей секторов, и с ними)
+    await desktopPage.locator('#toggleSectorLabels').uncheck({ force: true });
+    await desktopPage.locator('#togglePadas').check({ force: true });
+    await desktopPage.waitForTimeout(180);
+
+    const desktopPadasBadges = await desktopPage.evaluate(
+      () => window.__vastuApp.state.lastRenderMeta.placedBadges
+    );
+    assertNoOverlappingBadges(desktopPadasBadges, 'Desktop 1440x900 with 32 padas & 8 axes');
+
     const exportMetaCheck = await desktopPage.evaluate(async () => {
       const mod = await import('./src/renderer.js');
       const pngCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
@@ -250,21 +374,9 @@ async function main() {
       32,
       `Пункт 13: в сохранённой картинке должны быть все 32 номера пад (размещено ${exportMetaCheck.placedPadasCount})`
     );
+    assert.equal(exportMetaCheck.placedAxesCount, 8, 'Все 8 букв осей не перекрывают номера пад');
     assert.equal(exportMetaCheck.hiddenPadasCount, 0);
-    assertNoOverlappingBadges(exportMetaCheck.placedBadges, 'Exported PNG 32 padas');
-
-    const [download] = await Promise.all([
-      desktopPage.waitForEvent('download'),
-      desktopPage.locator('#exportPngBtn').click(),
-    ]);
-    const suggestedName = download.suggestedFilename();
-    assert.match(
-      suggestedName,
-      /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/,
-      `Неверное имя файла скачивания: ${suggestedName}`
-    );
-    const exportedSamplePath = path.join(screenshotsDir, 'exported-map-sample.png');
-    await download.saveAs(exportedSamplePath);
+    assertNoOverlappingBadges(exportMetaCheck.placedBadges, 'Exported PNG 32 padas + 8 axes');
 
     // Пункт 14 и пункт 13 (тесный контур): проверяем обрезанный стеной Брахмастан
     const clippedCheck = await desktopPage.evaluate(async () => {
@@ -353,6 +465,26 @@ async function main() {
 
     await mobilePage.goto(baseUrl, { waitUntil: 'networkidle' });
     await mobilePage.evaluate(() => document.fonts.ready);
+    await mobilePage.waitForTimeout(160);
+
+    // Скриншот телефона 390x844 — итоговая карта по умолчанию (без подписей секторов, хорошо видные оси)
+    const mobileDefaultState = await mobilePage.evaluate(() => ({
+      badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
+      placedAxesCount: window.__vastuApp.state.lastRenderMeta.placedAxesCount,
+      showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
+    }));
+    assert.equal(mobileDefaultState.showSectorLabels, false);
+    assert.equal(mobileDefaultState.placedAxesCount, 8);
+    assert.equal(
+      mobileDefaultState.badges.filter((b) => b.kind === 'sector').length,
+      0
+    );
+    assertNoOverlappingBadges(mobileDefaultState.badges, 'Mobile 390x844 default');
+
+    const mobilePath = path.join(screenshotsDir, 'mobile-390x844.png');
+    await mobilePage.screenshot({ path: mobilePath });
+
+    // Дополнительно проверяем сетку пад + 8 осей на телефоне 390x844
     await mobilePage.locator('#togglePadas').check({ force: true });
     await mobilePage.waitForTimeout(200);
 
@@ -362,7 +494,7 @@ async function main() {
       hintHidden: document.getElementById('padaZoomHint').hidden,
       hintText: document.getElementById('padaZoomHint').textContent.trim(),
     }));
-    assertNoOverlappingBadges(mobilePadaState.badges, 'Mobile 390x844');
+    assertNoOverlappingBadges(mobilePadaState.badges, 'Mobile 390x844 with padas');
     if (mobilePadaState.hiddenPadasCount > 0) {
       assert.equal(
         mobilePadaState.hintHidden,
@@ -371,9 +503,6 @@ async function main() {
       );
       assert.equal(mobilePadaState.hintText, 'Приблизьте, чтобы увидеть все номера пад');
     }
-
-    const mobilePath = path.join(screenshotsDir, 'mobile-390x844.png');
-    await mobilePage.screenshot({ path: mobilePath });
 
     // =========================================================================
     // 3. ТЕЛЕФОН 390x844 — крупный спутник (п. 3), проверка «С» (п. 2, 5, 12),
@@ -798,7 +927,9 @@ async function main() {
     assert.equal(afterContourUndoBrowser.satSatPtsLen, 2, 'Пункт 1: точки стены на спутнике прежние');
     assert.equal(afterContourUndoBrowser.exportDisabled, false);
 
-    // Проверка восстановления работы после перезагрузки и окна подтверждения
+    // Проверка сохранения состояния переключателя «Подписи секторов» в черновике при перезагрузке
+    await mobilePage.locator('#tabBtnLayers').click();
+    await mobilePage.locator('#toggleSectorLabels').check({ force: true });
     await mobilePage.waitForTimeout(300);
     await mobilePage.reload({ waitUntil: 'networkidle' });
     await mobilePage.waitForTimeout(250);
@@ -807,11 +938,19 @@ async function main() {
       verticesCount: window.__vastuApp.state.vertices.length,
       northSet: window.__vastuApp.state.northSet,
       northAngleDeg: window.__vastuApp.state.northAngleDeg,
+      showSectorLabels: window.__vastuApp.state.layers.showSectorLabels,
+      toggleChecked: document.getElementById('toggleSectorLabels').checked,
     }));
     assert.equal(restoredSession.isSamplePlan, false);
     assert.equal(restoredSession.verticesCount, 8);
     assert.equal(restoredSession.northSet, true);
     assert.equal(restoredSession.northAngleDeg, 47);
+    assert.equal(
+      restoredSession.showSectorLabels,
+      true,
+      'Задача 19: состояние переключателя «Подписи секторов» сохранилось с черновиком'
+    );
+    assert.equal(restoredSession.toggleChecked, true);
 
     // Проверка русской ошибки на битом PDF
     await mobilePage.locator('#tabBtnPlan').click();
@@ -1103,15 +1242,18 @@ async function main() {
       throw new Error(`Необработанные ошибки страницы: ${pageErrors.join('; ')}`);
     }
 
-    console.log('Скриншоты и браузерные проверки третьего круга успешно выполнены:');
+    console.log('Скриншоты и браузерные проверки Задачи 19 успешно выполнены:');
     console.log(` - ${mobilePath}`);
     console.log(` - ${mobileSatStep1Path}`);
     console.log(` - ${mobileSatStep2Path}`);
     console.log(` - ${landscapePath}`);
     console.log(` - ${desktopPath}`);
     console.log(` - ${exportedSamplePath}`);
+    console.log(` - ${exportedWithLabelsPath}`);
+    console.log('Проверка подписей секторов: выключены по умолчанию, включаются переключателем, сохраняются в черновике.');
+    console.log('Проверка осей: 8 хорошо видимых осей (С–Ю, В–З толще; диагональные тоньше) с буквами направлений без перекрытий.');
     console.log('Проверка PDF без Promise.withResolvers (iOS 16.4+): CCITT G4 скан БТИ успешно открыт в окне и в Worker.');
-    console.log('Проверка PNG-экспорта: 32 из 32 номеров пад без наложений, внешний контур Брахмастана без внутренних швов.');
+    console.log('Проверка PNG-экспорта: 32 из 32 номеров пад и 8 из 8 осей без наложений, внешний контур Брахмастана без внутренних швов.');
     console.log('Проверка автономности: 0 внешних запросов, 0 ошибок в консоли.');
   } finally {
     await browser.close();

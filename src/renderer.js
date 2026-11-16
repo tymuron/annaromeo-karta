@@ -9,6 +9,7 @@ import {
   normalizeDeg,
   isPointInPolygon,
   distance,
+  computeAxes,
   CENTER_OUTSIDE_NOTE,
   BRAHMASTAN_CLIPPED_NOTE,
   BRAHMASTAN_CLIPPED_BADGE,
@@ -290,6 +291,8 @@ function renderSatelliteScene(ctx, state, options) {
     transform: xf,
     northHandleScreen: null,
     placedBadges: [],
+    placedAxesCount: 0,
+    renderedAxes: [],
     hiddenPadasCount: 0,
     totalPadasCount: 0,
     isSatelliteView: true,
@@ -343,6 +346,8 @@ export function renderScene(ctx, state, options = {}) {
 
   const {
     showSectors = true,
+    showSectorLabels = false,
+    showAxes = true,
     showBrahmastan = true,
     showPadas = false,
     showPadaBelts = false,
@@ -398,6 +403,8 @@ export function renderScene(ctx, state, options = {}) {
       transform: xf,
       northHandleScreen: null,
       placedBadges: [],
+      placedAxesCount: 0,
+      renderedAxes: [],
       hiddenPadasCount: 0,
       totalPadasCount: 0,
     };
@@ -448,20 +455,6 @@ export function renderScene(ctx, state, options = {}) {
     const maxReach = Math.hypot(planWidth, planHeight) * 1.5;
     for (const sector of vastuMap.sectors) {
       const dir = azimuthToUnitVector(sector.startPlanDeg);
-      ctx.beginPath();
-      ctx.moveTo(vastuMap.center.x, vastuMap.center.y);
-      ctx.lineTo(
-        vastuMap.center.x + dir.x * maxReach,
-        vastuMap.center.y + dir.y * maxReach
-      );
-      ctx.stroke();
-    }
-
-    ctx.strokeStyle = 'rgba(66, 35, 38, 0.20)';
-    ctx.lineWidth = (isExport ? 1.1 : 0.9) / zoom;
-    ctx.setLineDash([6 / zoom, 6 / zoom]);
-    for (const sector of vastuMap.sectors) {
-      const dir = azimuthToUnitVector(sector.centerPlanDeg);
       ctx.beginPath();
       ctx.moveTo(vastuMap.center.x, vastuMap.center.y);
       ctx.lineTo(
@@ -614,7 +607,7 @@ export function renderScene(ctx, state, options = {}) {
   ctx.restore(); // Возврат в экранные CSS-координаты
 
   // ============================================================================
-  // 7. ЭКРАННЫЕ ПОДПИСИ, ОПОРНАЯ СТЕНА 1->2 И ИНТЕРАКТИВНЫЕ РУЧКИ (без наложений)
+  // 7. ОСИ СТОРОН СВЕТА, ЭКРАННЫЕ ПОДПИСИ, ОПОРНАЯ СТЕНА 1->2 И РУЧКИ (без наложений)
   // ============================================================================
   const fontScale = isExport ? 1.35 : 1;
   const placedBadges = [];
@@ -657,12 +650,13 @@ export function renderScene(ctx, state, options = {}) {
     ctx.restore();
   }
 
-  // 7.1. Стрелка направления на Север «С» (строго вне контура квартиры; двигается только во вкладке севера)
+  // 7.1. Стрелка направления на Север «С» (интерактивная во вкладке севера; пассивная — когда оси ещё не построены)
   let northHandleScreen = null;
+  let northHandleDraw = null;
   const showInteractiveNorthHandle =
     !isExport && activeTab === 'plan' && !isPickingPlanWall;
   const showPassiveNorthBadge =
-    !isExport && activeTab !== 'plan' && hasValidNorth;
+    !isExport && activeTab !== 'plan' && hasValidNorth && !(canShowMapLayers && showAxes);
 
   if (showInteractiveNorthHandle || showPassiveNorthBadge) {
     const northAnchorPlan =
@@ -760,87 +754,20 @@ export function renderScene(ctx, state, options = {}) {
       kind: 'north',
     });
 
-    ctx.save();
-    if (showInteractiveNorthHandle) {
-      ctx.strokeStyle = hasValidNorth
-        ? 'rgba(66, 35, 38, 0.32)'
-        : 'rgba(66, 35, 38, 0.22)';
-      ctx.lineWidth = 1.25;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.arc(northOriginScreen.x, northOriginScreen.y, chosenR, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash(hasValidNorth ? [] : [5, 4]);
-
-      ctx.strokeStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.65)';
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.moveTo(northOriginScreen.x, northOriginScreen.y);
-      ctx.lineTo(hx, hy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    } else {
-      ctx.strokeStyle = 'rgba(66, 35, 38, 0.45)';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(hx - dir.x * 20, hy - dir.y * 20);
-      ctx.lineTo(hx, hy);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
-    ctx.fillRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
-    ctx.strokeStyle = '#CABC90';
-    ctx.lineWidth = 1.5;
-    if (!hasValidNorth) ctx.setLineDash([4, 3]);
-    ctx.strokeRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
-    ctx.setLineDash([]);
-
-    const tipDist = boxR + 7;
-    const perpX = -dir.y;
-    const perpY = dir.x;
-    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
-    ctx.beginPath();
-    ctx.moveTo(hx + dir.x * tipDist, hy + dir.y * tipDist);
-    ctx.lineTo(hx + dir.x * (boxR - 1) + perpX * 5.5, hy + dir.y * (boxR - 1) + perpY * 5.5);
-    ctx.lineTo(hx + dir.x * (boxR - 1) - perpX * 5.5, hy + dir.y * (boxR - 1) - perpY * 5.5);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#CABC90';
-    ctx.font = `600 ${showInteractiveNorthHandle ? 13.5 : 11}px Manrope, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('С', hx, hy + 0.5);
-    ctx.restore();
+    northHandleDraw = {
+      northOriginScreen,
+      dir,
+      boxR,
+      chosenR,
+      hx,
+      hy,
+    };
   }
 
-  // 7.2. Маркер центра квартиры (или спокойная пометка, если центр вне стен / Брахмастан отсечён)
+  // 7.2. Подготовка маркера центра квартиры (Брахмабинду)
+  let centerDraw = null;
   if (canShowMapLayers && vastuMap.center) {
     const cScreen = xf.planToScreen(vastuMap.center);
-    ctx.save();
-
-    const ringR = 8 * fontScale;
-    ctx.strokeStyle = '#422326';
-    ctx.lineWidth = 1.6 * fontScale;
-    ctx.fillStyle = '#FCFBF7';
-    ctx.beginPath();
-    ctx.arc(cScreen.x, cScreen.y, ringR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#422326';
-    ctx.beginPath();
-    ctx.arc(cScreen.x, cScreen.y, 2.8 * fontScale, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(cScreen.x - 13 * fontScale, cScreen.y);
-    ctx.lineTo(cScreen.x + 13 * fontScale, cScreen.y);
-    ctx.moveTo(cScreen.x, cScreen.y - 13 * fontScale);
-    ctx.lineTo(cScreen.x, cScreen.y + 13 * fontScale);
-    ctx.stroke();
-
     const isClippedByWall = Boolean(
       !vastuMap.centerOutsideOrClipped &&
         vastuMap.brahmastan &&
@@ -855,8 +782,10 @@ export function renderScene(ctx, state, options = {}) {
           : 'Центр квартиры';
 
     const fPx = Math.round((viewWidth < 500 && !isExport ? 10.5 : 11.5) * fontScale);
+    ctx.save();
     ctx.font = `600 ${fPx}px Manrope, sans-serif`;
     const lw = Math.min(viewWidth - 20, ctx.measureText(labelText).width + 14 * fontScale);
+    ctx.restore();
     const lh = fPx + 8 * fontScale;
 
     const minY = isExport ? lh * 0.5 + 10 : 54 + lh * 0.5;
@@ -866,22 +795,12 @@ export function renderScene(ctx, state, options = {}) {
 
     const cRect = makeRect(lx, ly, lw, lh);
     placedBadges.push({ ...cRect, kind: 'center' });
-
-    ctx.fillStyle = 'rgba(66, 35, 38, 0.94)';
-    ctx.fillRect(cRect.x1, cRect.y1, lw, lh);
-    ctx.strokeStyle = 'rgba(202, 188, 144, 0.62)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(cRect.x1, cRect.y1, lw, lh);
-
-    ctx.fillStyle = '#CABC90';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(labelText, lx, ly + 0.5);
-    ctx.restore();
+    centerDraw = { cScreen, labelText, fPx, lw, lh, lx, ly, cRect };
   }
 
-  // 7.3. Подписи 8 секторов (с проверкой и разведением при тесном расположении)
-  if (canShowMapLayers && showSectors && vastuMap.sectors.length > 0) {
+  // 7.3. Подготовка длинных подписей 8 секторов (ТОЛЬКО если включён переключатель «Подписи секторов»)
+  const sectorLabelDraws = [];
+  if (canShowMapLayers && showSectorLabels && vastuMap.sectors.length > 0) {
     ctx.save();
     const compactMobile = (viewWidth < 520 || viewHeight < 440) && !isExport;
 
@@ -906,7 +825,6 @@ export function renderScene(ctx, state, options = {}) {
         ? codeFontPx + subFontPx + 13 * fontScale
         : codeFontPx + 8 * fontScale;
 
-      // Набор кандидатов положения внутри сектора без наложения на центр и соседние плашки
       const candidatePlanPts = [];
       const hit = sector.axisOuterHit;
       const dir = azimuthToUnitVector(sector.centerPlanDeg);
@@ -953,44 +871,243 @@ export function renderScene(ctx, state, options = {}) {
 
       if (!chosenScreen || !chosenRect) continue;
       placedBadges.push({ ...chosenRect, kind: 'sector', code: sector.code });
-
-      ctx.fillStyle = 'rgba(250, 248, 244, 0.92)';
-      ctx.fillRect(chosenRect.x1, chosenRect.y1, boxW, boxH);
-
-      ctx.fillStyle = sector.fillColor;
-      ctx.fillRect(chosenRect.x1, chosenRect.y1, 4 * fontScale, boxH);
-
-      ctx.strokeStyle = 'rgba(66, 35, 38, 0.32)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(chosenRect.x1, chosenRect.y1, boxW, boxH);
-
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#422326';
-      ctx.font = `600 ${codeFontPx}px Manrope, sans-serif`;
-      if (showFormulaOnCanvas) {
-        ctx.fillText(titleLine, chosenScreen.x + 1.5 * fontScale, chosenScreen.y - subFontPx * 0.52);
-        ctx.fillStyle = '#5D4B4E';
-        ctx.font = `400 ${subFontPx}px Manrope, sans-serif`;
-        ctx.fillText(sector.formula, chosenScreen.x + 1.5 * fontScale, chosenScreen.y + codeFontPx * 0.52);
-      } else {
-        ctx.fillText(titleLine, chosenScreen.x + 1.5 * fontScale, chosenScreen.y + 0.5);
-      }
+      sectorLabelDraws.push({
+        sector,
+        chosenScreen,
+        chosenRect,
+        boxW,
+        boxH,
+        codeFontPx,
+        subFontPx,
+        titleLine,
+        showFormulaOnCanvas,
+      });
     }
     ctx.restore();
   }
 
-  // 7.4. Номера 32 пад по внешнему периметру:
+  // 7.4. Подготовка 8 осей по сторонам света (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ) от Брахмабинду
+  // до контура квартиры и чуть за него, с короткими буквами направлений на внешних концах.
+  let placedAxesCount = 0;
+  const axesDraws = [];
+  const renderedAxes = [];
+
+  if (canShowMapLayers && showAxes && vastuMap.center) {
+    const axesSource =
+      vastuMap.axes && vastuMap.axes.length > 0
+        ? vastuMap.axes
+        : computeAxes(vastuMap.vertices, vastuMap.center, northAngleDeg);
+
+    const compactAxis = (viewWidth < 520 || viewHeight < 440) && !isExport;
+    const cardinalAxes = axesSource.filter((a) => a.isCardinal);
+    const diagonalAxes = axesSource.filter((a) => !a.isCardinal);
+    const orderedAxes = [...cardinalAxes, ...diagonalAxes];
+
+    ctx.save();
+    for (const axis of orderedAxes) {
+      const cScreen = xf.planToScreen(axis.origin);
+      const contourScreen = xf.planToScreen(axis.contourPoint);
+      const defaultEndScreen = xf.planToScreen(axis.endPoint);
+      const screenDeg = normalizeDeg(axis.planDeg + rotationDeg);
+      const sDir = azimuthToUnitVector(screenDeg);
+      const sPerp = { x: -sDir.y, y: sDir.x };
+
+      const planOverhangPx = distance(contourScreen, defaultEndScreen);
+      const minOverhangPx = Math.max(
+        planOverhangPx,
+        isExport ? 18 : compactAxis ? 8 : 11
+      );
+
+      const fontPx = isExport
+        ? axis.isCardinal
+          ? 20
+          : 17
+        : compactAxis
+          ? axis.isCardinal
+            ? 11.5
+            : 10
+          : axis.isCardinal
+            ? 13
+            : 11.5;
+      const fontWeight = axis.isCardinal ? 700 : 600;
+      ctx.font = `${fontWeight} ${fontPx}px Manrope, sans-serif`;
+      const textW = ctx.measureText(axis.code).width;
+      const padX = isExport
+        ? axis.isCardinal
+          ? 14
+          : 12
+        : compactAxis
+          ? axis.isCardinal
+            ? 8
+            : 6.5
+          : axis.isCardinal
+            ? 10
+            : 8.5;
+      const padY = isExport
+        ? axis.isCardinal
+          ? 10
+          : 8
+        : compactAxis
+          ? axis.isCardinal
+            ? 5.5
+            : 4.5
+          : axis.isCardinal
+            ? 7
+            : 6;
+      const boxH = Math.round(fontPx + padY);
+      const boxW = Math.round(Math.max(boxH, textW + padX));
+      const halfAlongRay = 0.5 * (Math.abs(sDir.x) * boxW + Math.abs(sDir.y) * boxH);
+
+      let chosenBadge = null;
+      const skipBadgeBecauseNorthHandle =
+        showInteractiveNorthHandle && axis.code === 'С';
+
+      if (!skipBadgeBecauseNorthHandle) {
+        const baseGap = showPadas
+          ? isExport
+            ? showPadaScores
+              ? 36
+              : 32
+            : showPadaScores
+              ? 28
+              : 24
+          : Math.max(
+              isExport ? 18 : compactAxis ? 8 : 11,
+              Math.min(planOverhangPx * 0.9, isExport ? 26 : 15)
+            );
+        const d0 = baseGap + halfAlongRay;
+        const step = isExport ? 14 : 9;
+
+        // 1) Основной ряд строго вдоль луча оси за пределами контура квартиры
+        for (let k = 0; k <= 7; k++) {
+          const distOff = d0 + k * step;
+          const bx = contourScreen.x + sDir.x * distOff;
+          const by = contourScreen.y + sDir.y * distOff;
+          const rect = makeRect(bx, by, boxW, boxH);
+          if (!isRectInsideView(rect, viewWidth, viewHeight, isExport ? 6 : 3)) continue;
+          if (!hasCollision(rect, isExport ? 2.5 : 1.5, true)) {
+            chosenBadge = { x: bx, y: by, rect, onRay: true, clampedInward: false };
+            break;
+          }
+        }
+
+        // 2) Запасной сдвиг чуть в сторону вдоль внешней границы (если мешает плашка интерфейса)
+        if (!chosenBadge) {
+          const latSteps = isExport ? [-18, 18, -32, 32, -48, 48] : [-14, 14, -26, 26];
+          outerAxisSearch: for (let k = 0; k <= 4; k++) {
+            const distOff = d0 + k * step;
+            for (const latOff of latSteps) {
+              const bx = contourScreen.x + sDir.x * distOff + sPerp.x * latOff;
+              const by = contourScreen.y + sDir.y * distOff + sPerp.y * latOff;
+              const candPlan = xf.screenToPlan({ x: bx, y: by });
+              if (isPointInPolygon(candPlan, vastuMap.vertices)) continue;
+              const rect = makeRect(bx, by, boxW, boxH);
+              if (!isRectInsideView(rect, viewWidth, viewHeight, isExport ? 6 : 3)) continue;
+              if (!hasCollision(rect, isExport ? 2 : 1.5, true)) {
+                chosenBadge = { x: bx, y: by, rect, onRay: false, clampedInward: false };
+                break outerAxisSearch;
+              }
+            }
+          }
+        }
+
+        // 3) На экране при сильном приближении (когда контур ушёл за край холста) — держим букву у края вида на луче
+        if (!chosenBadge && !isExport) {
+          const safeTop = 52 + boxH * 0.5;
+          const safeBottom = viewHeight - 56 - boxH * 0.5;
+          const safeLeft = 6 + boxW * 0.5;
+          const safeRight = viewWidth - 6 - boxW * 0.5;
+          const tTop = sDir.y < -0.08 ? (cScreen.y - safeTop) / -sDir.y : 9999;
+          const tBot = sDir.y > 0.08 ? (safeBottom - cScreen.y) / sDir.y : 9999;
+          const tLeft = sDir.x < -0.08 ? (cScreen.x - safeLeft) / -sDir.x : 9999;
+          const tRight = sDir.x > 0.08 ? (safeRight - cScreen.x) / sDir.x : 9999;
+          const maxRayT = Math.min(tTop, tBot, tLeft, tRight);
+          for (let m = 0; m <= 3; m++) {
+            const t = maxRayT - m * 12;
+            if (t < 32 || !Number.isFinite(t)) break;
+            const bx = cScreen.x + sDir.x * t;
+            const by = cScreen.y + sDir.y * t;
+            const rect = makeRect(bx, by, boxW, boxH);
+            if (!isRectInsideView(rect, viewWidth, viewHeight, 3)) continue;
+            if (!hasCollision(rect, 1.5, true)) {
+              chosenBadge = { x: bx, y: by, rect, onRay: true, clampedInward: true };
+              break;
+            }
+          }
+        }
+
+        if (chosenBadge) {
+          placedAxesCount++;
+          placedBadges.push({
+            ...chosenBadge.rect,
+            kind: 'axis',
+            code: axis.code,
+          });
+        }
+      }
+
+      const lineEndScreen =
+        chosenBadge && chosenBadge.onRay && !chosenBadge.clampedInward
+          ? { x: chosenBadge.x, y: chosenBadge.y }
+          : {
+              x: contourScreen.x + sDir.x * minOverhangPx,
+              y: contourScreen.y + sDir.y * minOverhangPx,
+            };
+
+      const lineWidth = isExport
+        ? axis.isCardinal
+          ? 3.8
+          : 2.2
+        : axis.isCardinal
+          ? 2.6
+          : 1.55;
+      const haloWidth = isExport
+        ? axis.isCardinal
+          ? 7.0
+          : 4.8
+        : axis.isCardinal
+          ? 4.6
+          : 3.2;
+
+      const drawEntry = {
+        axis,
+        cScreen,
+        contourScreen,
+        lineEndScreen,
+        lineWidth,
+        haloWidth,
+        fontPx,
+        fontWeight,
+        boxW,
+        boxH,
+        chosenBadge,
+      };
+      axesDraws.push(drawEntry);
+      renderedAxes.push({
+        code: axis.code,
+        isCardinal: axis.isCardinal,
+        azimuthDeg: axis.azimuthDeg,
+        planDeg: axis.planDeg,
+        screenDeg,
+        lineWidth,
+        fromScreen: cScreen,
+        contourScreen,
+        toScreen: lineEndScreen,
+        badgeRect: chosenBadge ? chosenBadge.rect : null,
+      });
+    }
+    ctx.restore();
+  }
+
+  // 7.5. Подготовка номеров 32 пад по внешнему периметру:
   // - в сохранённой картинке (isExport) размещаются ВСЕ 32 номера без пропусков (компактный шрифт или тонкая выноска при тесноте);
   // - на экране считаем скрытые из-за тесноты номера, чтобы показать подсказку «Приблизьте, чтобы увидеть все номера пад».
   let totalPadasCount = 0;
   let placedPadasCount = 0;
+  const padaDraws = [];
 
   if (canShowMapLayers && showPadas && vastuMap.padaGrid) {
     ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
     const centerScreen = xf.planToScreen(vastuMap.center);
     const normalFontPx = isExport
       ? showPadaScores
@@ -1117,7 +1234,151 @@ export function renderScene(ctx, state, options = {}) {
 
       placedPadasCount++;
       placedBadges.push({ ...chosen.rect, kind: 'pada', number: pada.number });
+      padaDraws.push({ pada, wallScreen, text, chosen });
+    }
+    ctx.restore();
+  }
 
+  // ============================================================================
+  // 7.6. ОТРИСОВКА ЭКРАННЫХ СЛОЁВ ПО ПОРЯДКУ ГЛУБИНЫ:
+  //      сначала линии 8 осей, затем маркеры центра, пад и букв направлений поверх линий
+  // ============================================================================
+  if (axesDraws.length > 0) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.setLineDash([]);
+
+    const diagEntries = axesDraws.filter((d) => !d.axis.isCardinal);
+    const cardEntries = axesDraws.filter((d) => d.axis.isCardinal);
+
+    // Сначала диагональные оси (тоньше), затем главные оси С–Ю и В–З (толще)
+    for (const group of [diagEntries, cardEntries]) {
+      for (const item of group) {
+        ctx.strokeStyle = item.axis.isCardinal
+          ? 'rgba(250, 248, 244, 0.92)'
+          : 'rgba(250, 248, 244, 0.88)';
+        ctx.lineWidth = item.haloWidth;
+        ctx.beginPath();
+        ctx.moveTo(item.cScreen.x, item.cScreen.y);
+        ctx.lineTo(item.lineEndScreen.x, item.lineEndScreen.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#422326';
+        ctx.lineWidth = item.lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(item.cScreen.x, item.cScreen.y);
+        ctx.lineTo(item.lineEndScreen.x, item.lineEndScreen.y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Ручка Севера «С» (если активна)
+  if (northHandleDraw) {
+    const { northOriginScreen, dir, boxR, chosenR, hx, hy } = northHandleDraw;
+    ctx.save();
+    if (showInteractiveNorthHandle) {
+      ctx.strokeStyle = hasValidNorth
+        ? 'rgba(66, 35, 38, 0.32)'
+        : 'rgba(66, 35, 38, 0.22)';
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(northOriginScreen.x, northOriginScreen.y, chosenR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash(hasValidNorth ? [] : [5, 4]);
+
+      ctx.strokeStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.65)';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(northOriginScreen.x, northOriginScreen.y);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      ctx.strokeStyle = 'rgba(66, 35, 38, 0.45)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(hx - dir.x * 20, hy - dir.y * 20);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
+    ctx.fillRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
+    ctx.strokeStyle = '#CABC90';
+    ctx.lineWidth = 1.5;
+    if (!hasValidNorth) ctx.setLineDash([4, 3]);
+    ctx.strokeRect(hx - boxR, hy - boxR, boxR * 2, boxR * 2);
+    ctx.setLineDash([]);
+
+    const tipDist = boxR + 7;
+    const perpX = -dir.y;
+    const perpY = dir.x;
+    ctx.fillStyle = hasValidNorth ? '#422326' : 'rgba(66, 35, 38, 0.82)';
+    ctx.beginPath();
+    ctx.moveTo(hx + dir.x * tipDist, hy + dir.y * tipDist);
+    ctx.lineTo(hx + dir.x * (boxR - 1) + perpX * 5.5, hy + dir.y * (boxR - 1) + perpY * 5.5);
+    ctx.lineTo(hx + dir.x * (boxR - 1) - perpX * 5.5, hy + dir.y * (boxR - 1) - perpY * 5.5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#CABC90';
+    ctx.font = `600 ${showInteractiveNorthHandle ? 13.5 : 11}px Manrope, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('С', hx, hy + 0.5);
+    ctx.restore();
+  }
+
+  // Маркер центра квартиры (Брахмабинду) поверх схождения осей
+  if (centerDraw) {
+    const { cScreen, labelText, fPx, lw, lh, lx, ly, cRect } = centerDraw;
+    ctx.save();
+
+    const ringR = 8 * fontScale;
+    ctx.strokeStyle = '#422326';
+    ctx.lineWidth = 1.6 * fontScale;
+    ctx.fillStyle = '#FCFBF7';
+    ctx.beginPath();
+    ctx.arc(cScreen.x, cScreen.y, ringR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#422326';
+    ctx.beginPath();
+    ctx.arc(cScreen.x, cScreen.y, 2.8 * fontScale, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(cScreen.x - 13 * fontScale, cScreen.y);
+    ctx.lineTo(cScreen.x + 13 * fontScale, cScreen.y);
+    ctx.moveTo(cScreen.x, cScreen.y - 13 * fontScale);
+    ctx.lineTo(cScreen.x, cScreen.y + 13 * fontScale);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(66, 35, 38, 0.94)';
+    ctx.fillRect(cRect.x1, cRect.y1, lw, lh);
+    ctx.strokeStyle = 'rgba(202, 188, 144, 0.62)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cRect.x1, cRect.y1, lw, lh);
+
+    ctx.font = `600 ${fPx}px Manrope, sans-serif`;
+    ctx.fillStyle = '#CABC90';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(labelText, lx, ly + 0.5);
+    ctx.restore();
+  }
+
+  // Номера 32 пад поверх линий осей
+  if (padaDraws.length > 0) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (const { pada, wallScreen, text, chosen } of padaDraws) {
       if (chosen.useLeader) {
         ctx.save();
         ctx.strokeStyle = 'rgba(66, 35, 38, 0.52)';
@@ -1163,7 +1424,108 @@ export function renderScene(ctx, state, options = {}) {
     ctx.restore();
   }
 
-  // 7.5. Интерактивные вершины и середины стен (во вкладке контура, всегда поверх любых подписей)
+  // Короткие буквы направлений на внешних концах 8 осей (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ)
+  if (axesDraws.length > 0) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (const item of axesDraws) {
+      const { axis, lineEndScreen, fontPx, fontWeight, boxW, boxH, chosenBadge } = item;
+      if (!chosenBadge) continue;
+
+      if (!chosenBadge.onRay) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(66, 35, 38, 0.55)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(lineEndScreen.x, lineEndScreen.y);
+        ctx.lineTo(chosenBadge.x, chosenBadge.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const isNorth = axis.code === 'С';
+      ctx.fillStyle = isNorth ? '#422326' : '#FAF8F4';
+      ctx.fillRect(chosenBadge.rect.x1, chosenBadge.rect.y1, boxW, boxH);
+
+      ctx.strokeStyle = isNorth
+        ? '#CABC90'
+        : axis.isCardinal
+          ? '#422326'
+          : 'rgba(66, 35, 38, 0.72)';
+      ctx.lineWidth = isNorth
+        ? isExport
+          ? 2
+          : 1.5
+        : axis.isCardinal
+          ? isExport
+            ? 2.2
+            : 1.5
+          : isExport
+            ? 1.6
+            : 1.15;
+      ctx.strokeRect(chosenBadge.rect.x1, chosenBadge.rect.y1, boxW, boxH);
+
+      ctx.font = `${fontWeight} ${fontPx}px Manrope, sans-serif`;
+      ctx.fillStyle = isNorth ? '#CABC90' : '#422326';
+      ctx.fillText(axis.code, chosenBadge.x, chosenBadge.y + 0.5);
+    }
+    ctx.restore();
+  }
+
+  // Длинные подписи 8 секторов поверх плана (только когда включён «Подписи секторов»)
+  if (sectorLabelDraws.length > 0) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (const item of sectorLabelDraws) {
+      const {
+        sector,
+        chosenScreen,
+        chosenRect,
+        boxW,
+        boxH,
+        codeFontPx,
+        subFontPx,
+        titleLine,
+        showFormulaOnCanvas,
+      } = item;
+
+      ctx.fillStyle = 'rgba(250, 248, 244, 0.92)';
+      ctx.fillRect(chosenRect.x1, chosenRect.y1, boxW, boxH);
+
+      ctx.fillStyle = sector.fillColor;
+      ctx.fillRect(chosenRect.x1, chosenRect.y1, 4 * fontScale, boxH);
+
+      ctx.strokeStyle = 'rgba(66, 35, 38, 0.32)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(chosenRect.x1, chosenRect.y1, boxW, boxH);
+
+      ctx.fillStyle = '#422326';
+      ctx.font = `600 ${codeFontPx}px Manrope, sans-serif`;
+      if (showFormulaOnCanvas) {
+        ctx.fillText(
+          titleLine,
+          chosenScreen.x + 1.5 * fontScale,
+          chosenScreen.y - subFontPx * 0.52
+        );
+        ctx.fillStyle = '#5D4B4E';
+        ctx.font = `400 ${subFontPx}px Manrope, sans-serif`;
+        ctx.fillText(
+          sector.formula,
+          chosenScreen.x + 1.5 * fontScale,
+          chosenScreen.y + codeFontPx * 0.52
+        );
+      } else {
+        ctx.fillText(titleLine, chosenScreen.x + 1.5 * fontScale, chosenScreen.y + 0.5);
+      }
+    }
+    ctx.restore();
+  }
+
+  // 7.7. Интерактивные вершины и середины стен (во вкладке контура, всегда поверх любых подписей)
   if (!isExport && vertices.length > 0 && activeTab === 'contour') {
     ctx.save();
 
@@ -1207,6 +1569,8 @@ export function renderScene(ctx, state, options = {}) {
     transform: xf,
     northHandleScreen,
     placedBadges,
+    placedAxesCount,
+    renderedAxes,
     totalPadasCount,
     placedPadasCount,
     hiddenPadasCount: Math.max(0, totalPadasCount - placedPadasCount),

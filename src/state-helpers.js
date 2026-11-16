@@ -406,3 +406,48 @@ export function canExportVastuMap(state) {
   if (!state.vastuMap || state.vastuMap.selfIntersects) return false;
   return true;
 }
+
+/**
+ * Настройки слоёв карты по умолчанию:
+ * - сектора, оси и Брахмастан включены;
+ * - длинные подписи секторов (названия и формулы поверх плана) по умолчанию ВЫКЛЮЧЕНЫ;
+ * - сетка пад и её подпункты по умолчанию выключены.
+ */
+export function createDefaultLayers() {
+  return {
+    showSectors: true,
+    showSectorLabels: false,
+    showAxes: true,
+    showBrahmastan: true,
+    showPadas: false,
+    showPadaBelts: false,
+    showPadaScores: false,
+    sectorOpacity: 0.4,
+  };
+}
+
+/**
+ * Восстанавливает настройки слоёв из сохранённого черновика (включая переключатель «Подписи секторов»).
+ */
+export function restoreSavedLayers(savedLayers) {
+  const defaults = createDefaultLayers();
+  if (!savedLayers || typeof savedLayers !== 'object') {
+    return defaults;
+  }
+  return {
+    showSectors: Boolean(savedLayers.showSectors ?? defaults.showSectors),
+    showSectorLabels: Boolean(
+      savedLayers.showSectorLabels ?? defaults.showSectorLabels
+    ),
+    showAxes: Boolean(savedLayers.showAxes ?? defaults.showAxes),
+    showBrahmastan: Boolean(savedLayers.showBrahmastan ?? defaults.showBrahmastan),
+    showPadas: Boolean(savedLayers.showPadas ?? defaults.showPadas),
+    showPadaBelts: Boolean(savedLayers.showPadaBelts ?? defaults.showPadaBelts),
+    showPadaScores: Boolean(savedLayers.showPadaScores ?? defaults.showPadaScores),
+    sectorOpacity:
+      typeof savedLayers.sectorOpacity === 'number' &&
+      Number.isFinite(savedLayers.sectorOpacity)
+        ? savedLayers.sectorOpacity
+        : defaults.sectorOpacity,
+  };
+}

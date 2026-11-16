@@ -41,6 +41,8 @@ import {
   buildExportFilename,
   validateNorthDegreeInput,
   canExportVastuMap,
+  createDefaultLayers,
+  restoreSavedLayers,
 } from './state-helpers.js';
 import {
   downscalePlanToDataUrl,
@@ -74,14 +76,7 @@ const state = {
   frozenRotationDeg: null,
   activeTab: 'layers',
 
-  layers: {
-    showSectors: true,
-    showBrahmastan: true,
-    showPadas: false,
-    showPadaBelts: false,
-    showPadaScores: false,
-    sectorOpacity: 0.4,
-  },
+  layers: createDefaultLayers(),
 
   sat: {
     canvas: null,
@@ -158,6 +153,7 @@ const gotoContourStepBtn = document.getElementById('gotoContourStepBtn');
 const layersReadyContent = document.getElementById('layersReadyContent');
 
 const toggleSectors = document.getElementById('toggleSectors');
+const toggleSectorLabels = document.getElementById('toggleSectorLabels');
 const toggleBrahmastan = document.getElementById('toggleBrahmastan');
 const togglePadas = document.getElementById('togglePadas');
 const padaZoomHint = document.getElementById('padaZoomHint');
@@ -969,6 +965,9 @@ function syncInspectorUI() {
 
   // Переключатели слоёв и блок готовности карты
   toggleSectors.checked = state.layers.showSectors;
+  if (toggleSectorLabels) {
+    toggleSectorLabels.checked = Boolean(state.layers.showSectorLabels);
+  }
   toggleBrahmastan.checked = state.layers.showBrahmastan;
   togglePadas.checked = state.layers.showPadas;
   togglePadaBelts.checked = state.layers.showPadaBelts;
@@ -2130,6 +2129,15 @@ toggleSectors.addEventListener('change', () => {
   schedulePersist();
 });
 
+if (toggleSectorLabels) {
+  toggleSectorLabels.addEventListener('change', () => {
+    state.layers.showSectorLabels = toggleSectorLabels.checked;
+    syncInspectorUI();
+    requestRender();
+    schedulePersist();
+  });
+}
+
 toggleBrahmastan.addEventListener('change', () => {
   state.layers.showBrahmastan = toggleBrahmastan.checked;
   syncInspectorUI();
@@ -2449,19 +2457,7 @@ async function restoreOrInit() {
       state.orthoSnap =
         typeof saved.orthoSnap === 'boolean' ? saved.orthoSnap : true;
 
-      if (saved.layers && typeof saved.layers === 'object') {
-        state.layers = {
-          showSectors: Boolean(saved.layers.showSectors ?? true),
-          showBrahmastan: Boolean(saved.layers.showBrahmastan ?? true),
-          showPadas: Boolean(saved.layers.showPadas ?? false),
-          showPadaBelts: Boolean(saved.layers.showPadaBelts ?? false),
-          showPadaScores: Boolean(saved.layers.showPadaScores ?? false),
-          sectorOpacity:
-            typeof saved.layers.sectorOpacity === 'number'
-              ? saved.layers.sectorOpacity
-              : 0.4,
-        };
-      }
+      state.layers = restoreSavedLayers(saved.layers);
 
       const restoredTab =
         saved.activeTab && tabPanes[saved.activeTab] ? saved.activeTab : 'layers';

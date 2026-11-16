@@ -1,16 +1,22 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeDeg,
   azimuthToUnitVector,
+  vectorToAzimuthDeg,
   signedAngleDeltaDeg,
   northAngleFromWallSegments,
   houseTiltFromSatelliteWall,
   polygonArea,
   computePolygonCenter,
   isPointInPolygon,
+  pointToSegmentDistance,
   hasSelfIntersection,
   extractPiecesBoundaryLoops,
+  computeAxes,
   computeSectors,
   getSectorForPoint,
   getPadaForPoint,
@@ -38,6 +44,8 @@ import {
   buildExportFilename,
   validateNorthDegreeInput,
   canExportVastuMap,
+  createDefaultLayers,
+  restoreSavedLayers,
 } from '../src/state-helpers.js';
 
 function approxEqual(actual, expected, eps = 1e-6, msg = '') {
@@ -807,4 +815,154 @@ test('Обнаружение самопересекающегося контур
   ];
   assert.equal(hasSelfIntersection(validQuad), false);
   assert.equal(hasSelfIntersection(bowtie), true);
+});
+
+test('Задача 19 (п. 1): по умолчанию подписи секторов выключены, переключатель сохраняется в черновике', () => {
+  const defaults = createDefaultLayers();
+  assert.equal(
+    defaults.showSectorLabels,
+    false,
+    'По умолчанию длинные подписи секторов на карте выключены'
+  );
+  assert.equal(defaults.showAxes, true, 'По умолчанию оси сторон света включены');
+  assert.equal(defaults.showSectors, true);
+  assert.equal(defaults.showBrahmastan, true);
+  assert.equal(defaults.showPadas, false);
+
+  // Восстановление пустого или старого черновика без поля showSectorLabels оставляет подписи выключенными
+  assert.equal(restoreSavedLayers(null).showSectorLabels, false);
+  assert.equal(restoreSavedLayers({}).showSectorLabels, false);
+
+  // Включённый или выключенный переключатель «Подписи секторов» восстанавливается из черновика
+  assert.equal(
+    restoreSavedLayers({ showSectorLabels: true }).showSectorLabels,
+    true
+  );
+  assert.equal(
+    restoreSavedLayers({ showSectorLabels: false }).showSectorLabels,
+    false
+  );
+
+  // Проверяем разметку index.html: переключатель #toggleSectorLabels присутствует и по умолчанию не отмечен
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  const inputMatch = html.match(/<input[^>]*id="toggleSectorLabels"[^>]*>/);
+  assert.ok(inputMatch, 'В index.html есть переключатель #toggleSectorLabels');
+  assert.equal(
+    /\bchecked\b/i.test(inputMatch[0]),
+    false,
+    'В index.html переключатель «Подписи секторов» по умолчанию выключен'
+  );
+  assert.match(html, /Подписи секторов/);
+});
+
+test('Задача 19 (п. 2): концы 8 осей (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ) лежат на контуре или за ним строго по сторонам света', () => {
+  const lShape = [
+    { x: 190, y: 150 },
+    { x: 830, y: 150 },
+    { x: 830, y: 450 },
+    { x: 1210, y: 450 },
+    { x: 1210, y: 890 },
+    { x: 190, y: 890 },
+  ];
+
+  // Пока Север не задан, оси не строятся
+  const mapNoNorth = buildVastuMap(lShape, null);
+  assert.equal(mapNoNorth.axes.length, 0);
+
+  const expectedCodes = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
+  const expectedAzimuths = [0, 45, 90, 135, 180, 225, 270, 315];
+
+  function minDistToContourEdges(pt, poly) {
+    let minD = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % poly.length];
+      const d = pointToSegmentDistance(pt, a, b);
+      if (d < minD) minD = d;
+    }
+    return minD;
+  }
+
+  for (const northDeg of [0, 22, 47, 135, 278.5, 338]) {
+    const map = buildVastuMap(lShape, northDeg);
+    assert.equal(map.axes.length, 8);
+    assert.deepEqual(
+      map.axes.map((a) => a.code),
+      expectedCodes
+    );
+    assert.deepEqual(
+      map.axes.map((a) => a.azimuthDeg),
+      expectedAzimuths
+    );
+
+    for (const axis of map.axes) {
+      // Начало каждой оси — строго в Брахмабинду (центре квартиры)
+      approxEqual(axis.origin.x, map.center.x, 1e-9);
+      approxEqual(axis.origin.y, map.center.y, 1e-9);
+
+      // Главные оси С–Ю и В–З — cardinal, диагональные СВ–ЮЗ и ЮВ–СЗ — не cardinal
+      const shouldBeCardinal = ['С', 'В', 'Ю', 'З'].includes(axis.code);
+      assert.equal(axis.isCardinal, shouldBeCardinal);
+
+      // Направление оси идёт строго по сторонам света от центра (northDeg + azimuthDeg), а не по стенам!
+      const expectedPlanDeg = normalizeDeg(northDeg + axis.azimuthDeg);
+      approxEqual(axis.planDeg, expectedPlanDeg, 1e-9);
+
+      const contourAz = vectorToAzimuthDeg(
+        axis.contourPoint.x - map.center.x,
+        axis.contourPoint.y - map.center.y
+      );
+      const endAz = vectorToAzimuthDeg(
+        axis.endPoint.x - map.center.x,
+        axis.endPoint.y - map.center.y
+      );
+      approxEqual(signedAngleDeltaDeg(expectedPlanDeg, contourAz), 0, 1e-6);
+      approxEqual(signedAngleDeltaDeg(expectedPlanDeg, endAz), 0, 1e-6);
+
+      // В итоговой карте «Север сверху» (поворот на -northDeg) ось смотрит ровно на свой азимут (С = 0° вверх)
+      approxEqual(
+        normalizeDeg(endAz - northDeg),
+        axis.azimuthDeg,
+        1e-6,
+        `Ось ${axis.code} в карте Севером вверх смотрит под углом ${axis.azimuthDeg}°`
+      );
+
+      // Точка contourPoint лежит прямо на контуре квартиры, а внешний конец endPoint — чуть за контуром
+      approxEqual(
+        minDistToContourEdges(axis.contourPoint, lShape),
+        0,
+        1e-5,
+        `Точка пересечения оси ${axis.code} лежит на контуре квартиры`
+      );
+      assert.ok(axis.endDist > axis.contourDist, `Конец оси ${axis.code} выходит чуть за контур`);
+      assert.equal(
+        isPointInPolygon(axis.endPoint, lShape),
+        false,
+        `Внешний конец оси ${axis.code} лежит за пределами контура квартиры`
+      );
+    }
+  }
+
+  // П-образная квартира (центр вне стен): все 8 осей также строятся по нужным направлениям за контур
+  const uShape = [
+    { x: 0, y: 0 },
+    { x: 120, y: 0 },
+    { x: 120, y: 100 },
+    { x: 95, y: 100 },
+    { x: 95, y: 22 },
+    { x: 25, y: 22 },
+    { x: 25, y: 100 },
+    { x: 0, y: 100 },
+  ];
+  const uAxes = computeAxes(uShape, null, 18);
+  assert.equal(uAxes.length, 8);
+  for (const axis of uAxes) {
+    assert.equal(isPointInPolygon(axis.endPoint, uShape), false);
+    const endAz = vectorToAzimuthDeg(
+      axis.endPoint.x - axis.origin.x,
+      axis.endPoint.y - axis.origin.y
+    );
+    approxEqual(signedAngleDeltaDeg(normalizeDeg(18 + axis.azimuthDeg), endAz), 0, 1e-6);
+  }
 });

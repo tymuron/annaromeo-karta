@@ -734,6 +734,73 @@ export function computeBrahmastan(vertices, centerInput = null) {
 }
 
 /**
+ * 8 осей по сторонам света (С, СВ, В, ЮВ, Ю, ЮЗ, З, СЗ) из центра квартиры (Брахмабинду)
+ * до контура квартиры и чуть за него.
+ * Главные оси (С–Ю, В–З) помечены isCardinal = true, диагональные (СВ–ЮЗ, ЮВ–СЗ) — isCardinal = false.
+ * Оси идут строго по сторонам света от центра (относительно географического Севера northAngleDeg), а не по стенам.
+ */
+export function computeAxes(vertices, centerInput = null, northAngleDeg = 0) {
+  const pts = cleanPolygonVertices(vertices);
+  const center = centerInput || computePolygonCenter(pts);
+  if (!center || pts.length < 3) return [];
+
+  const north = normalizeDeg(northAngleDeg);
+  const maxR = maxDistanceFromCenter(center, pts);
+  const overhangDist = Math.max(8, Math.min(28, maxR * 0.045));
+
+  return SECTORS.map((sector) => {
+    const azimuthDeg = sector.centerAzimuth;
+    const planDeg = normalizeDeg(north + azimuthDeg);
+    const dir = azimuthToUnitVector(planDeg);
+    const isCardinal = azimuthDeg % 90 === 0;
+    const hits = rayPolygonIntersections(center, planDeg, pts);
+    const outerHit = hits.length > 0 ? hits[hits.length - 1] : null;
+
+    let contourDist;
+    if (outerHit) {
+      contourDist = outerHit.dist;
+    } else {
+      let maxProj = 0;
+      for (const v of pts) {
+        const proj = (v.x - center.x) * dir.x + (v.y - center.y) * dir.y;
+        if (proj > maxProj) maxProj = proj;
+      }
+      contourDist = Math.max(maxProj, maxR * 0.35);
+    }
+
+    const contourPoint = outerHit
+      ? { x: outerHit.x, y: outerHit.y }
+      : {
+          x: center.x + dir.x * contourDist,
+          y: center.y + dir.y * contourDist,
+        };
+
+    const endDist = contourDist + overhangDist;
+    const endPoint = {
+      x: center.x + dir.x * endDist,
+      y: center.y + dir.y * endDist,
+    };
+
+    return {
+      id: sector.id,
+      code: sector.code,
+      name: sector.name,
+      azimuthDeg,
+      planDeg,
+      isCardinal,
+      dir,
+      origin: { x: center.x, y: center.y },
+      contourHit: outerHit,
+      contourDist,
+      contourPoint,
+      overhangDist,
+      endDist,
+      endPoint,
+    };
+  });
+}
+
+/**
  * 8 радиальных секторов по 45° относительно географического Севера на плане (northAngleDeg).
  * Для каждого сектора возвращает точные отсечённые по контуру куски, площадь, долю площади и точку подписи.
  */
@@ -957,6 +1024,7 @@ export function buildVastuMap(vertices, northAngleDeg = null) {
     Number.isFinite(Number(northAngleDeg));
 
   const normalizedNorth = hasNorth ? normalizeDeg(Number(northAngleDeg)) : null;
+  const axes = hasNorth ? computeAxes(pts, center, normalizedNorth) : [];
   const sectors = hasNorth ? computeSectors(pts, center, normalizedNorth) : [];
   const padaGrid = hasNorth ? computePadaGrid(pts, center, normalizedNorth) : null;
 
@@ -974,6 +1042,7 @@ export function buildVastuMap(vertices, northAngleDeg = null) {
     northSet: hasNorth,
     northAngleDeg: normalizedNorth,
     brahmastan,
+    axes,
     sectors,
     padaGrid,
   };
