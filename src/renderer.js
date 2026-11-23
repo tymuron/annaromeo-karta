@@ -2012,11 +2012,8 @@ export function exportMapToPngCanvas(state, options = {}) {
   } else if (layers.showBrahmastan) {
     ctx.fillStyle = '#6E5A5D';
     ctx.font = '400 17px Manrope, sans-serif';
-    ctx.fillText(
-      'Брахмастан по форме квартиры · Метод школы С. А. Балуты',
-      64,
-      sigY
-    );
+    // Анна, 23.11.2026, 20:37: подпись школы под картой убрана
+    ctx.fillText('Брахмастан по форме квартиры', 64, sigY);
   }
 
   canvas.__exportRenderMeta = exportRenderMeta;
