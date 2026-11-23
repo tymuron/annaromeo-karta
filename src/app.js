@@ -191,7 +191,10 @@ const newMapBtn = document.getElementById('newMapBtn');
 const topExportBtn = document.getElementById('topExportBtn');
 const exportPngBtn = document.getElementById('exportPngBtn');
 const shareMapBtn = document.getElementById('shareMapBtn');
+const exportCleanPngBtn = document.getElementById('exportCleanPngBtn');
+const shareCleanMapBtn = document.getElementById('shareCleanMapBtn');
 const exportCtaWrap = exportPngBtn ? exportPngBtn.parentElement : null;
+const exportCleanCtaWrap = exportCleanPngBtn ? exportCleanPngBtn.parentElement : null;
 
 const confirmModal = document.getElementById('confirmModal');
 const confirmModalTitle = document.getElementById('confirmModalTitle');
@@ -1077,6 +1080,13 @@ function syncShareButtonVisibility(canExport) {
   if (exportCtaWrap) {
     exportCtaWrap.classList.toggle('single-action', !showShare);
   }
+  if (shareCleanMapBtn) {
+    shareCleanMapBtn.hidden = !showShare;
+    shareCleanMapBtn.disabled = !canExport;
+  }
+  if (exportCleanCtaWrap) {
+    exportCleanCtaWrap.classList.toggle('single-action', !showShare);
+  }
 }
 
 function syncInspectorUI() {
@@ -1190,6 +1200,9 @@ function syncInspectorUI() {
   // Кнопка в шапке не выставляется вперёд на шагах 1–3: показывается только на шаге 4, когда карта готова
   topExportBtn.hidden = !(canExport && state.activeTab === 'layers');
   exportPngBtn.disabled = !canExport;
+  if (exportCleanPngBtn) {
+    exportCleanPngBtn.disabled = !canExport;
+  }
   syncShareButtonVisibility(canExport);
 
   layersBlockedBox.hidden = stepsInfo.canShowMap;
@@ -2323,7 +2336,7 @@ function canInvokeWebShareWithFile(file) {
   }
 }
 
-function buildExportArtifactOrWarn() {
+function buildExportArtifactOrWarn({ clean = false } = {}) {
   if (!state.planCanvas) {
     setActiveTab('plan');
     return null;
@@ -2337,15 +2350,15 @@ function buildExportArtifactOrWarn() {
     return null;
   }
 
-  const exportCanvas = exportMapToPngCanvas(state);
+  const exportCanvas = exportMapToPngCanvas(state, { clean });
   if (!exportCanvas) return null;
 
-  const filename = buildExportFilename(new Date());
+  const filename = buildExportFilename(new Date(), { clean });
   const dataUrl = exportCanvas.toDataURL('image/png');
   lastExportDataUrl = dataUrl;
   const blob = dataUrlToBlobSync(dataUrl);
   const file = new File([blob], filename, { type: 'image/png' });
-  return { filename, dataUrl, blob, file };
+  return { filename, dataUrl, blob, file, clean };
 }
 
 function markMapExportCompleted() {
@@ -2387,8 +2400,8 @@ function triggerDirectFileDownload({ filename, dataUrl, blob }) {
   }
 }
 
-async function saveReadyMapPng() {
-  const artifact = buildExportArtifactOrWarn();
+async function saveReadyMapPng({ clean = false } = {}) {
+  const artifact = buildExportArtifactOrWarn({ clean });
   if (!artifact) return;
 
   const platInfo = detectExportPlatform({
@@ -2401,7 +2414,7 @@ async function saveReadyMapPng() {
     try {
       await navigator.share({
         files: [artifact.file],
-        title: 'Васту-карта квартиры',
+        title: clean ? 'Васту-карта квартиры (без подписей)' : 'Васту-карта квартиры',
       });
       markMapExportCompleted();
       showSaveConfirmation('Отправлено');
@@ -2416,15 +2429,15 @@ async function saveReadyMapPng() {
   triggerDirectFileDownload(artifact);
 }
 
-async function shareReadyMapPng() {
-  const artifact = buildExportArtifactOrWarn();
+async function shareReadyMapPng({ clean = false } = {}) {
+  const artifact = buildExportArtifactOrWarn({ clean });
   if (!artifact) return;
 
   if (canInvokeWebShareWithFile(artifact.file)) {
     try {
       await navigator.share({
         files: [artifact.file],
-        title: 'Васту-карта квартиры',
+        title: clean ? 'Васту-карта квартиры (без подписей)' : 'Васту-карта квартиры',
       });
       markMapExportCompleted();
       showSaveConfirmation('Отправлено');
@@ -2441,10 +2454,16 @@ async function shareReadyMapPng() {
   showSaveConfirmation('Нажмите и удерживайте картинку, чтобы сохранить или переслать');
 }
 
-topExportBtn.addEventListener('click', saveReadyMapPng);
-exportPngBtn.addEventListener('click', saveReadyMapPng);
+topExportBtn.addEventListener('click', () => saveReadyMapPng({ clean: false }));
+exportPngBtn.addEventListener('click', () => saveReadyMapPng({ clean: false }));
+if (exportCleanPngBtn) {
+  exportCleanPngBtn.addEventListener('click', () => saveReadyMapPng({ clean: true }));
+}
 if (shareMapBtn) {
-  shareMapBtn.addEventListener('click', shareReadyMapPng);
+  shareMapBtn.addEventListener('click', () => shareReadyMapPng({ clean: false }));
+}
+if (shareCleanMapBtn) {
+  shareCleanMapBtn.addEventListener('click', () => shareReadyMapPng({ clean: true }));
 }
 
 async function handleNewMapClick() {
@@ -2655,6 +2674,6 @@ window.__vastuApp = {
   handlePointPickingUndo,
   handlePointPickingDone,
   computeStepsState: () => computeStepsState(state),
-  exportMapToPngCanvas: () => exportMapToPngCanvas(state),
+  exportMapToPngCanvas: (options) => exportMapToPngCanvas(state, options),
   resetForNewMap,
 };

@@ -1593,10 +1593,132 @@ export function renderScene(ctx, state, options = {}) {
 }
 
 /**
+ * Вычисляет плотные границы рисунка карты на сцене экспорта (видимая графика плана,
+ * контур стен, центр, оси с направлениями, подписи секторов и номера пад)
+ * для чистого экспорта без пустых полей.
+ */
+function computeCleanExportCropBounds(state, exportRenderMeta, stageCtx, stageWidth, stageHeight) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  function includePoint(pt, margin = 0) {
+    if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return;
+    if (pt.x - margin < minX) minX = pt.x - margin;
+    if (pt.y - margin < minY) minY = pt.y - margin;
+    if (pt.x + margin > maxX) maxX = pt.x + margin;
+    if (pt.y + margin > maxY) maxY = pt.y + margin;
+  }
+
+  function includeRect(rect, margin = 0) {
+    if (!rect) return;
+    if (
+      !Number.isFinite(rect.x1) ||
+      !Number.isFinite(rect.y1) ||
+      !Number.isFinite(rect.x2) ||
+      !Number.isFinite(rect.y2)
+    ) {
+      return;
+    }
+    if (rect.x1 - margin < minX) minX = rect.x1 - margin;
+    if (rect.y1 - margin < minY) minY = rect.y1 - margin;
+    if (rect.x2 + margin > maxX) maxX = rect.x2 + margin;
+    if (rect.y2 + margin > maxY) maxY = rect.y2 + margin;
+  }
+
+  const xf = exportRenderMeta && exportRenderMeta.transform;
+  const { vertices = [], vastuMap = null } = state || {};
+
+  // 1. Гарантированно включаем все векторные элементы Васту-карты (контур, центр, оси, подписи, пады)
+  if (xf && Array.isArray(vertices)) {
+    for (const v of vertices) {
+      includePoint(xf.planToScreen(v), 4);
+    }
+  }
+
+  if (xf && vastuMap && vastuMap.center) {
+    includePoint(xf.planToScreen(vastuMap.center), 20);
+  }
+
+  if (exportRenderMeta && Array.isArray(exportRenderMeta.placedBadges)) {
+    for (const badge of exportRenderMeta.placedBadges) {
+      includeRect(badge, 2);
+    }
+  }
+
+  if (exportRenderMeta && Array.isArray(exportRenderMeta.renderedAxes)) {
+    for (const axis of exportRenderMeta.renderedAxes) {
+      const axisPad = Math.ceil(((axis.lineWidth || 4) + 4) * 0.5);
+      includePoint(axis.fromScreen, axisPad);
+      includePoint(axis.contourScreen, axisPad);
+      includePoint(axis.toScreen, axisPad);
+      if (axis.badgeRect) {
+        includeRect(axis.badgeRect, 2);
+      }
+    }
+  }
+
+  // 2. Уточняем границы по реально нарисованным пикселям плана (наружные стены, выноски, подписи на чертеже),
+  //    отсекая пустой фон #FAF8F4, белые поля PDF/сканов и едва заметную миллиметровку пустых углов листа
+  if (stageCtx && typeof stageCtx.getImageData === 'function') {
+    try {
+      const img = stageCtx.getImageData(0, 0, stageWidth, stageHeight);
+      const data = img.data;
+      const bgR = 250;
+      const bgG = 248;
+      const bgB = 244;
+      const threshold = 28;
+      const step = 2;
+
+      for (let y = 0; y < stageHeight; y += step) {
+        const rowOff = y * stageWidth * 4;
+        for (let x = 0; x < stageWidth; x += step) {
+          const i = rowOff + x * 4;
+          const a = data[i + 3];
+          if (a < 16) continue;
+          const dr = Math.abs(data[i] - bgR);
+          const dg = Math.abs(data[i + 1] - bgG);
+          const db = Math.abs(data[i + 2] - bgB);
+          if (dr > threshold || dg > threshold || db > threshold) {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x + step > maxX) maxX = x + step;
+            if (y + step > maxY) maxY = y + step;
+          }
+        }
+      }
+    } catch {
+      // Если контекст не поддерживает чтение пикселей — используем векторные границы
+    }
+  }
+
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY)
+  ) {
+    return { x: 0, y: 0, width: stageWidth, height: stageHeight };
+  }
+
+  const x = Math.max(0, Math.floor(minX));
+  const y = Math.max(0, Math.floor(minY));
+  const right = Math.min(stageWidth, Math.ceil(maxX));
+  const bottom = Math.min(stageHeight, Math.ceil(maxY));
+  const width = Math.max(1, right - x);
+  const height = Math.max(1, bottom - y);
+  return { x, y, width, height };
+}
+
+/**
  * Формирует итоговый лист PNG высокого качества для прикрепления к домашнему заданию.
  * По умолчанию — Север сверху («Север на карте всегда сверху»), вариант «как на листе плана» — по настройке.
+ * При options.clean === true возвращает только саму карту без шапки, легенды, подвала, рамки и окошка «С ↑»,
+ * обрезанную по рисунку карты с ровным светлым полем (~5% ширины) и в том же масштабе рендера.
  */
-export function exportMapToPngCanvas(state) {
+export function exportMapToPngCanvas(state, options = {}) {
+  const { clean = false } = options || {};
   const {
     planCanvas,
     planWidth,
@@ -1618,6 +1740,113 @@ export function exportMapToPngCanvas(state) {
   const footerH = showLegend ? 210 : 92;
   const mapStageH = 1520;
   const outHeight = headerH + mapStageH + footerH;
+
+  const rotRad = alignNorthUp ? (-normalizeDeg(northAngleDeg) * Math.PI) / 180 : 0;
+  const absCos = Math.abs(Math.cos(rotRad));
+  const absSin = Math.abs(Math.sin(rotRad));
+  const rotatedW = planWidth * absCos + planHeight * absSin;
+  const rotatedH = planWidth * absSin + planHeight * absCos;
+
+  const padMargin = 156;
+  const fitZoom = Math.min(
+    (outWidth - padMargin * 2) / Math.max(1, rotatedW),
+    (mapStageH - padMargin * 2) / Math.max(1, rotatedH)
+  );
+
+  const stageCanvas = document.createElement('canvas');
+  stageCanvas.width = outWidth;
+  stageCanvas.height = mapStageH;
+  const stageCtx = stageCanvas.getContext('2d');
+
+  // Резервируем правый верхний угол поля под розу Севера (только для полного листа с шапкой)
+  const roseStageRect = {
+    x1: outWidth - 186,
+    y1: 42,
+    x2: outWidth - 42,
+    y2: 186,
+  };
+
+  const exportRenderMeta = renderScene(
+    stageCtx,
+    {
+      ...state,
+      activeTab: 'layers',
+      frozenRotationDeg: null,
+      zoom: fitZoom,
+      panX: 0,
+      panY: 0,
+    },
+    {
+      viewWidth: outWidth,
+      viewHeight: mapStageH,
+      dpr: 1,
+      isExport: true,
+      backgroundColor: '#FAF8F4',
+      extraBlockedRects: clean ? [] : [roseStageRect],
+    }
+  );
+
+  if (clean) {
+    const crop = computeCleanExportCropBounds(
+      state,
+      exportRenderMeta,
+      stageCtx,
+      outWidth,
+      mapStageH
+    );
+    // Ровное поле вокруг рисунка карты ≈ 5% итоговой ширины (pad / (crop.width + 2*pad) ≈ 0.0496)
+    const pad = Math.max(16, Math.round(crop.width * 0.055));
+    const cleanW = crop.width + pad * 2;
+    const cleanH = crop.height + pad * 2;
+
+    const cleanCanvas = document.createElement('canvas');
+    cleanCanvas.width = cleanW;
+    cleanCanvas.height = cleanH;
+    const cleanCtx = cleanCanvas.getContext('2d');
+
+    cleanCtx.fillStyle = '#FAF8F4';
+    cleanCtx.fillRect(0, 0, cleanW, cleanH);
+    cleanCtx.drawImage(
+      stageCanvas,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      pad,
+      pad,
+      crop.width,
+      crop.height
+    );
+
+    const dx = pad - crop.x;
+    const dy = pad - crop.y;
+    const shiftPoint = (pt) => (pt ? { x: pt.x + dx, y: pt.y + dy } : pt);
+    const shiftRect = (r) =>
+      r
+        ? {
+            ...r,
+            x1: r.x1 + dx,
+            y1: r.y1 + dy,
+            x2: r.x2 + dx,
+            y2: r.y2 + dy,
+          }
+        : r;
+
+    cleanCanvas.__exportRenderMeta = {
+      ...exportRenderMeta,
+      clean: true,
+      cropRect: { ...crop, pad },
+      placedBadges: (exportRenderMeta.placedBadges || []).map(shiftRect),
+      renderedAxes: (exportRenderMeta.renderedAxes || []).map((a) => ({
+        ...a,
+        fromScreen: shiftPoint(a.fromScreen),
+        contourScreen: shiftPoint(a.contourScreen),
+        toScreen: shiftPoint(a.toScreen),
+        badgeRect: shiftRect(a.badgeRect),
+      })),
+    };
+    return cleanCanvas;
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = outWidth;
@@ -1670,51 +1899,6 @@ export function exportMapToPngCanvas(state) {
       ? `${activeLayerNames.join(' · ')}   |   ${orientLabel}`
       : orientLabel;
   ctx.fillText(headerSubtitle, outWidth - 64, headerH * 0.5);
-
-  const rotRad = alignNorthUp ? (-normalizeDeg(northAngleDeg) * Math.PI) / 180 : 0;
-  const absCos = Math.abs(Math.cos(rotRad));
-  const absSin = Math.abs(Math.sin(rotRad));
-  const rotatedW = planWidth * absCos + planHeight * absSin;
-  const rotatedH = planWidth * absSin + planHeight * absCos;
-
-  const padMargin = 156;
-  const fitZoom = Math.min(
-    (outWidth - padMargin * 2) / Math.max(1, rotatedW),
-    (mapStageH - padMargin * 2) / Math.max(1, rotatedH)
-  );
-
-  const stageCanvas = document.createElement('canvas');
-  stageCanvas.width = outWidth;
-  stageCanvas.height = mapStageH;
-  const stageCtx = stageCanvas.getContext('2d');
-
-  // Резервируем правый верхний угол поля под розу Севера, чтобы подписи пад не заходили под неё
-  const roseStageRect = {
-    x1: outWidth - 186,
-    y1: 42,
-    x2: outWidth - 42,
-    y2: 186,
-  };
-
-  const exportRenderMeta = renderScene(
-    stageCtx,
-    {
-      ...state,
-      activeTab: 'layers',
-      frozenRotationDeg: null,
-      zoom: fitZoom,
-      panX: 0,
-      panY: 0,
-    },
-    {
-      viewWidth: outWidth,
-      viewHeight: mapStageH,
-      dpr: 1,
-      isExport: true,
-      backgroundColor: '#FAF8F4',
-      extraBlockedRects: [roseStageRect],
-    }
-  );
 
   ctx.drawImage(stageCanvas, 0, headerH);
 

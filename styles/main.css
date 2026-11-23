@@ -1053,8 +1053,12 @@ input[type='range']::-webkit-slider-thumb {
 .export-cta-wrap {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: 1.35fr 1fr;
+  grid-template-columns: 1.5fr 1fr;
   gap: 8px;
+}
+
+.export-clean-wrap {
+  margin-top: 8px;
 }
 
 .export-cta-wrap.single-action {

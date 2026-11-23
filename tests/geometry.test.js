@@ -49,6 +49,7 @@ import {
   resetWorkspaceState,
 } from '../src/state-helpers.js';
 import { clearWorkspaceSession } from '../src/storage.js';
+import { exportMapToPngCanvas } from '../src/renderer.js';
 
 function approxEqual(actual, expected, eps = 1e-6, msg = '') {
   assert.ok(
@@ -1362,4 +1363,269 @@ test('Задача 21 (кнопка «Новая карта»): видимост
   assert.match(appJs, /Начать новую карту\?/);
   assert.match(appJs, /Текущая карта не сохранится\. Если она нужна, сначала сохраните её картинкой\./);
   assert.match(appJs, /Начать заново/);
+});
+
+test('Задача 22 (чистый экспорт карты): имя файла, отсутствие шапки/легенды/подвала/окошка Севера и обрезка по рисунку', () => {
+  // 1) Имя файла: обычный экспорт не изменился, чистый получает приставку -bez-podpisej перед расширением
+  const testDate = new Date(2026, 10, 23);
+  assert.equal(buildExportFilename(testDate), 'karta-kvartiry-2026-11-23.png');
+  assert.equal(buildExportFilename(testDate, { clean: false }), 'karta-kvartiry-2026-11-23.png');
+  assert.equal(
+    buildExportFilename(testDate, { clean: true }),
+    'karta-kvartiry-2026-11-23-bez-podpisej.png'
+  );
+
+  // 2) Проверка рендера exportMapToPngCanvas в обоих режимах на мок-холсте Canvas 2D
+  const lVertices = [
+    { x: 190, y: 150 },
+    { x: 830, y: 150 },
+    { x: 830, y: 450 },
+    { x: 1210, y: 450 },
+    { x: 1210, y: 890 },
+    { x: 190, y: 890 },
+  ];
+  const map = buildVastuMap(lVertices, 22);
+  const baseState = {
+    planCanvas: { width: 1400, height: 1060 },
+    planWidth: 1400,
+    planHeight: 1060,
+    vertices: lVertices,
+    vastuMap: map,
+    northSet: true,
+    northSource: 'satellite',
+    northAngleDeg: 22,
+    alignNorthUp: true,
+    layers: {
+      ...createDefaultLayers(),
+      showSectors: true,
+      showSectorLabels: false,
+      showAxes: true,
+      showBrahmastan: true,
+      showPadas: false,
+    },
+  };
+
+  const prevDocument = globalThis.document;
+  const prevPath2D = globalThis.Path2D;
+
+  function createMockDom() {
+    const createdCanvases = [];
+    const allTexts = [];
+    const allDrawImages = [];
+    const allFillRects = [];
+
+    class MockPath2D {
+      moveTo() {}
+      lineTo() {}
+      closePath() {}
+    }
+
+    const mockDocument = {
+      createElement(tag) {
+        if (tag !== 'canvas') {
+          throw new Error(`Unexpected tag: ${tag}`);
+        }
+        const canvas = {
+          width: 0,
+          height: 0,
+          texts: [],
+          fillRects: [],
+          drawImages: [],
+          getContext() {
+            return {
+              fillStyle: '#000000',
+              strokeStyle: '#000000',
+              lineWidth: 1,
+              lineJoin: 'miter',
+              lineCap: 'butt',
+              font: '12px sans-serif',
+              textAlign: 'left',
+              textBaseline: 'alphabetic',
+              globalAlpha: 1,
+              globalCompositeOperation: 'source-over',
+              save() {},
+              restore() {},
+              scale() {},
+              translate() {},
+              rotate() {},
+              clip() {},
+              beginPath() {},
+              moveTo() {},
+              lineTo() {},
+              arc() {},
+              closePath() {},
+              fill() {},
+              stroke() {},
+              setLineDash() {},
+              strokeRect() {},
+              fillRect(x, y, w, h) {
+                const entry = { x, y, w, h, fillStyle: this.fillStyle };
+                canvas.fillRects.push(entry);
+                allFillRects.push(entry);
+              },
+              drawImage(...args) {
+                canvas.drawImages.push(args);
+                allDrawImages.push(args);
+              },
+              measureText(text) {
+                const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
+                const fontPx = m ? Number(m[1]) : 14;
+                return { width: String(text).length * fontPx * 0.58 };
+              },
+              fillText(text, x, y) {
+                const entry = { text: String(text), x, y, fillStyle: this.fillStyle };
+                canvas.texts.push(entry);
+                allTexts.push(entry);
+              },
+            };
+          },
+        };
+        createdCanvases.push(canvas);
+        return canvas;
+      },
+    };
+
+    return { mockDocument, MockPath2D, createdCanvases, allTexts, allDrawImages, allFillRects };
+  }
+
+  try {
+    // 2а) Обычный экспорт (по умолчанию): полный лист 2400x1858 с шапкой, легендой, подвалом и окошком «С ↑»
+    const normalEnv = createMockDom();
+    globalThis.document = normalEnv.mockDocument;
+    globalThis.Path2D = normalEnv.MockPath2D;
+
+    const normalCanvas = exportMapToPngCanvas(baseState);
+    assert.ok(normalCanvas);
+    assert.equal(normalCanvas.width, 2400);
+    assert.equal(normalCanvas.height, 1858);
+
+    const normalTextStrings = normalEnv.allTexts.map((t) => t.text);
+    assert.ok(normalTextStrings.includes('ВАСТУ-КАРТА ПРОСТРАНСТВА'), 'Обычный экспорт рисует шапку');
+    assert.ok(
+      normalTextStrings.some((s) => s.includes('Север сверху')),
+      'Обычный экспорт рисует подпись справа в шапке'
+    );
+    assert.ok(normalTextStrings.includes('С · Север'), 'Обычный экспорт рисует легенду секторов');
+    assert.ok(
+      normalTextStrings.includes('Свободный приход денег'),
+      'Обычный экспорт рисует значения секторов'
+    );
+    assert.ok(
+      normalTextStrings.includes('Брахмастан по форме квартиры · Метод школы С. А. Балуты'),
+      'Обычный экспорт рисует подпись школы в подвале'
+    );
+    assert.ok(
+      normalTextStrings.includes('Васту-карта · Анна Ромео'),
+      'Обычный экспорт рисует подпись бренда в подвале'
+    );
+    assert.equal(
+      normalTextStrings.filter((s) => s === 'С').length,
+      2,
+      'Обычный экспорт рисует «С» на оси и второе «С» в окошке компаса справа сверху'
+    );
+
+    // 2б) Чистый экспорт ({ clean: true }): без шапки, легенды, подвала и окошка «С ↑», обрезан по рисунку
+    const cleanEnv = createMockDom();
+    globalThis.document = cleanEnv.mockDocument;
+    globalThis.Path2D = cleanEnv.MockPath2D;
+
+    const cleanCanvas = exportMapToPngCanvas(baseState, { clean: true });
+    assert.ok(cleanCanvas);
+    assert.equal(cleanCanvas.__exportRenderMeta.clean, true);
+    assert.ok(
+      cleanCanvas.width < normalCanvas.width - 400,
+      `Чистый экспорт обрезан по ширине (${cleanCanvas.width} < ${normalCanvas.width - 400})`
+    );
+    assert.ok(
+      cleanCanvas.height < normalCanvas.height - 300,
+      `Чистый экспорт обрезан по высоте (${cleanCanvas.height} < ${normalCanvas.height - 300})`
+    );
+
+    const { cropRect } = cleanCanvas.__exportRenderMeta;
+    assert.ok(cropRect && cropRect.pad > 0);
+    const padRatio = cropRect.pad / cleanCanvas.width;
+    assert.ok(
+      padRatio >= 0.04 && padRatio <= 0.06,
+      `Поле вокруг рисунка ${(padRatio * 100).toFixed(2)}% в пределах 4–6% ширины`
+    );
+
+    const cleanTextStrings = cleanEnv.allTexts.map((t) => t.text);
+    assert.equal(
+      cleanTextStrings.includes('ВАСТУ-КАРТА ПРОСТРАНСТВА'),
+      false,
+      'Чистый экспорт НЕ рисует шапку'
+    );
+    assert.equal(
+      cleanTextStrings.some((s) => s.includes('Север сверху') || s.includes('Как на листе плана')),
+      false,
+      'Чистый экспорт НЕ рисует строку справа в шапке'
+    );
+    assert.equal(
+      cleanTextStrings.some((s) => s.includes('С · Север') || s.includes('Свободный приход денег')),
+      false,
+      'Чистый экспорт НЕ рисует нижний блок с 8 значениями секторов'
+    );
+    assert.equal(
+      cleanTextStrings.some((s) => s.includes('Метод школы С. А. Балуты')),
+      false,
+      'Чистый экспорт НЕ рисует подпись школы в подвале'
+    );
+    assert.equal(
+      cleanTextStrings.some((s) => s.includes('Васту-карта · Анна Ромео')),
+      false,
+      'Чистый экспорт НЕ рисует подпись бренда в подвале'
+    );
+    assert.equal(
+      cleanTextStrings.filter((s) => s === 'С').length,
+      1,
+      'Чистый экспорт рисует «С» только на оси, без отдельного окошка «С ↑»'
+    );
+    for (const dirCode of ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ']) {
+      assert.ok(cleanTextStrings.includes(dirCode), `Чистый экспорт сохраняет ось «${dirCode}»`);
+    }
+    assert.ok(
+      cleanTextStrings.includes('Брахмастан · Центр'),
+      'Чистый экспорт сохраняет подпись Брахмастана'
+    );
+    assert.equal(
+      cleanCanvas.fillRects[0].fillStyle,
+      '#FAF8F4',
+      'Фон чистого экспорта — светлый цвет карты (#FAF8F4)'
+    );
+    assert.equal(
+      cleanCanvas.fillRects.some((r) => r.fillStyle === '#422326'),
+      false,
+      'На чистом экспорте нет бордовой плашки шапки'
+    );
+
+    // 2в) Чистый экспорт со слоем 32 пад: все 32 номера и все 8 осей попадают в обрезанную картинку
+    const padasEnv = createMockDom();
+    globalThis.document = padasEnv.mockDocument;
+    globalThis.Path2D = padasEnv.MockPath2D;
+
+    const cleanPadasCanvas = exportMapToPngCanvas(
+      { ...baseState, layers: { ...baseState.layers, showPadas: true } },
+      { clean: true }
+    );
+    assert.equal(cleanPadasCanvas.__exportRenderMeta.placedPadasCount, 32);
+    assert.equal(cleanPadasCanvas.__exportRenderMeta.placedAxesCount, 8);
+    for (const b of cleanPadasCanvas.__exportRenderMeta.placedBadges) {
+      assert.ok(
+        b.x1 >= 0 && b.y1 >= 0 && b.x2 <= cleanPadasCanvas.width && b.y2 <= cleanPadasCanvas.height,
+        `Все подписи пад и осей целиком внутри чистого экспорта: ${JSON.stringify(b)}`
+      );
+    }
+  } finally {
+    if (prevDocument === undefined) delete globalThis.document;
+    else globalThis.document = prevDocument;
+    if (prevPath2D === undefined) delete globalThis.Path2D;
+    else globalThis.Path2D = prevPath2D;
+  }
+
+  // 3) Проверка разметки кнопок «Скачать без подписей» и «Поделиться»
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  assert.match(html, /<button[^>]*id="exportPngBtn"[^>]*>\s*Скачать карту\s*<\/button>/);
+  assert.match(html, /<button[^>]*id="exportCleanPngBtn"[^>]*>\s*Скачать без подписей\s*<\/button>/);
+  assert.match(html, /<button[^>]*id="shareCleanMapBtn"[^>]*>/);
 });

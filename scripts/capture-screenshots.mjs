@@ -404,6 +404,43 @@ async function main() {
     await downloadNoLabels.saveAs(exportedSamplePath);
     savedScreenshots.push(exportedSamplePath);
 
+    // Проверяем чистый экспорт («Скачать без подписей») и имя файла с -bez-podpisej
+    const [downloadClean] = await Promise.all([
+      desktopPage.waitForEvent('download'),
+      desktopPage.locator('#exportCleanPngBtn').click(),
+    ]);
+    assert.match(
+      downloadClean.suggestedFilename(),
+      /^karta-kvartiry-\d{4}-\d{2}-\d{2}-bez-podpisej\.png$/
+    );
+    const exportedCleanPath = path.join(screenshotsDir, 'exported-map-clean.png');
+    await downloadClean.saveAs(exportedCleanPath);
+    savedScreenshots.push(exportedCleanPath);
+
+    const cleanMetaCheck = await desktopPage.evaluate(async () => {
+      const mod = await import('./src/renderer.js');
+      const fullCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state);
+      const cleanCanvas = mod.exportMapToPngCanvas(window.__vastuApp.state, { clean: true });
+      const cleanBtnRect = document.getElementById('exportCleanPngBtn').getBoundingClientRect();
+      return {
+        fullW: fullCanvas.width,
+        fullH: fullCanvas.height,
+        cleanW: cleanCanvas.width,
+        cleanH: cleanCanvas.height,
+        cropRect: cleanCanvas.__exportRenderMeta.cropRect,
+        placedAxesCount: cleanCanvas.__exportRenderMeta.placedAxesCount,
+        placedBadges: cleanCanvas.__exportRenderMeta.placedBadges,
+        cleanBtnVisible: cleanBtnRect.width >= 150 && cleanBtnRect.height >= 40,
+      };
+    });
+    assert.equal(cleanMetaCheck.cleanBtnVisible, true, 'Кнопка «Скачать без подписей» видна на десктопе');
+    assert.equal(cleanMetaCheck.fullW, 2400);
+    assert.equal(cleanMetaCheck.fullH, 1858);
+    assert.ok(cleanMetaCheck.cleanW < cleanMetaCheck.fullW - 400);
+    assert.ok(cleanMetaCheck.cleanH < cleanMetaCheck.fullH - 300);
+    assert.equal(cleanMetaCheck.placedAxesCount, 8);
+    assertNoOverlappingBadges(cleanMetaCheck.placedBadges, 'Exported clean PNG');
+
     const step4TitleAfterExport = await desktopPage.evaluate(
       () => document.querySelector('#tabBtnLayers .mode-tab-title').textContent.trim()
     );
@@ -899,6 +936,34 @@ async function main() {
 
     await takeShot(mobile390Page, 'mobile-390x844.png');
 
+    // Прокручиваем панель шага 4 до кнопок экспорта и проверяем их видимость на 390x844
+    const m390ExportBtns = await mobile390Page.evaluate(() => {
+      const btnClean = document.getElementById('exportCleanPngBtn');
+      btnClean.scrollIntoView({ block: 'center' });
+      const b1 = document.getElementById('exportPngBtn').getBoundingClientRect();
+      const b2 = btnClean.getBoundingClientRect();
+      const s1 = document.getElementById('shareMapBtn').getBoundingClientRect();
+      const s2 = document.getElementById('shareCleanMapBtn').getBoundingClientRect();
+      return {
+        b1Fits: b1.left >= 0 && b1.right <= window.innerWidth + 1 && b1.height >= 44,
+        b2Fits: b2.left >= 0 && b2.right <= window.innerWidth + 1 && b2.height >= 40,
+        b2Text: btnClean.textContent.trim(),
+        s1Fits: s1.left >= 0 && s1.right <= window.innerWidth + 1,
+        s2Fits: s2.left >= 0 && s2.right <= window.innerWidth + 1,
+        noOverlapRow1: b1.right <= s1.left + 1,
+        noOverlapRow2: b2.right <= s2.left + 1,
+      };
+    });
+    assert.equal(m390ExportBtns.b1Fits, true);
+    assert.equal(m390ExportBtns.b2Fits, true);
+    assert.equal(m390ExportBtns.b2Text, 'Скачать без подписей');
+    assert.equal(m390ExportBtns.s1Fits, true);
+    assert.equal(m390ExportBtns.s2Fits, true);
+    assert.equal(m390ExportBtns.noOverlapRow1, true);
+    assert.equal(m390ExportBtns.noOverlapRow2, true);
+    await mobile390Page.waitForTimeout(80);
+    await takeShot(mobile390Page, 'mobile-390x844-export-buttons.png');
+
     // 2.4. Телефон 390x844: «Новая карта» -> окно подтверждения -> Шаг 1 после сброса -> перезагрузка -> повторная загрузка того же файла
     await mobile390Page.locator('#newMapBtn').click();
     await mobile390Page.waitForTimeout(120);
@@ -1329,14 +1394,18 @@ async function main() {
 
     await androidPage.evaluate(() => {
       window.__shareCalls = 0;
+      window.__sharedFilenames = [];
       Object.defineProperty(navigator, 'canShare', {
         configurable: true,
         value: (data) => Boolean(data && Array.isArray(data.files) && data.files.length === 1),
       });
       Object.defineProperty(navigator, 'share', {
         configurable: true,
-        value: async () => {
+        value: async (data) => {
           window.__shareCalls += 1;
+          if (data && data.files && data.files[0]) {
+            window.__sharedFilenames.push(data.files[0].name);
+          }
         },
       });
       window.__vastuApp.recomputeVastuMap();
@@ -1349,6 +1418,16 @@ async function main() {
     assert.match(androidDownload.suggestedFilename(), /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/);
     assert.equal(await androidPage.evaluate(() => window.__shareCalls), 0);
 
+    const [androidCleanDownload] = await Promise.all([
+      androidPage.waitForEvent('download'),
+      androidPage.locator('#exportCleanPngBtn').click(),
+    ]);
+    assert.match(
+      androidCleanDownload.suggestedFilename(),
+      /^karta-kvartiry-\d{4}-\d{2}-\d{2}-bez-podpisej\.png$/
+    );
+    assert.equal(await androidPage.evaluate(() => window.__shareCalls), 0);
+
     await androidPage.locator('#shareMapBtn').click();
     await androidPage.waitForTimeout(80);
     assert.equal(await androidPage.evaluate(() => window.__shareCalls), 1);
@@ -1356,6 +1435,13 @@ async function main() {
       await androidPage.evaluate(() => document.getElementById('saveToastText').textContent),
       'Отправлено'
     );
+
+    await androidPage.locator('#shareCleanMapBtn').click();
+    await androidPage.waitForTimeout(80);
+    const androidShareNames = await androidPage.evaluate(() => window.__sharedFilenames);
+    assert.equal(androidShareNames.length, 2);
+    assert.match(androidShareNames[0], /^karta-kvartiry-\d{4}-\d{2}-\d{2}\.png$/);
+    assert.match(androidShareNames[1], /^karta-kvartiry-\d{4}-\d{2}-\d{2}-bez-podpisej\.png$/);
     await androidCtx.close();
 
     // Встроенный браузер Telegram: показ готовой карты поверх экрана

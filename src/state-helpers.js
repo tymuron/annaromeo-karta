@@ -509,14 +509,17 @@ export function detectExportPlatform({
 }
 
 /**
- * Имя файла сохраняемой карты: karta-kvartiry-ГГГГ-ММ-ДД.png
+ * Имя файла сохраняемой карты:
+ * - обычный экспорт: karta-kvartiry-ГГГГ-ММ-ДД.png
+ * - чистый экспорт без подписей: karta-kvartiry-ГГГГ-ММ-ДД-bez-podpisej.png
  */
-export function buildExportFilename(date = new Date()) {
+export function buildExportFilename(date = new Date(), { clean = false } = {}) {
   const d = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
   const yyyy = String(d.getFullYear()).padStart(4, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
-  return `karta-kvartiry-${yyyy}-${mm}-${dd}.png`;
+  const suffix = clean ? '-bez-podpisej' : '';
+  return `karta-kvartiry-${yyyy}-${mm}-${dd}${suffix}.png`;
 }
 
 /**
