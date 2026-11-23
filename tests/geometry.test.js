@@ -46,7 +46,9 @@ import {
   canExportVastuMap,
   createDefaultLayers,
   restoreSavedLayers,
+  resetWorkspaceState,
 } from '../src/state-helpers.js';
+import { clearWorkspaceSession } from '../src/storage.js';
 
 function approxEqual(actual, expected, eps = 1e-6, msg = '') {
   assert.ok(
@@ -1159,4 +1161,205 @@ test('Задача 20 (п. 3б): старый черновик с «ручным
   assert.equal(satelliteDraft.activeTab, 'layers');
   assert.equal(satelliteDraft.satPlanPts.length, 2);
   approxEqual(satelliteDraft.satHouseTiltDeg, 22, 1e-9);
+});
+
+test('Задача 21 (кнопка «Новая карта»): видимость на шагах 2–4, полный сброс состояния и очистка хранилищ', async () => {
+  const quad = [
+    { x: 100, y: 100 },
+    { x: 500, y: 100 },
+    { x: 500, y: 400 },
+    { x: 100, y: 400 },
+  ];
+  const readyMap = buildVastuMap(quad, 22);
+
+  // 1) Видимость кнопки «Новая карта»: скрыта на шаге 1 (с планом и без), видна на шагах 2, 3 и 4
+  assert.equal(
+    computeStepsState({ planCanvas: null, activeTab: 'plan' }).showNewMapButton,
+    false,
+    'На пустом шаге 1 кнопка «Новая карта» скрыта'
+  );
+  assert.equal(
+    computeStepsState({ planCanvas: {}, activeTab: 'plan' }).showNewMapButton,
+    false,
+    'На шаге 1 даже с загруженным планом кнопка «Новая карта» скрыта'
+  );
+  for (const tab of ['north', 'contour', 'layers']) {
+    assert.equal(
+      computeStepsState({ planCanvas: {}, activeTab: tab }).showNewMapButton,
+      true,
+      `На шаге ${tab} (после первого) кнопка «Новая карта» видна`
+    );
+  }
+
+  // 2) Заполняем «грязное» рабочее состояние (план, точки, контур, север, спутник, подписи, масштаб, история)
+  const history = createUndoHistory(40);
+  history.pushContour(quad.slice(0, 3));
+  const dirtyState = {
+    isSamplePlan: true,
+    sampleModified: true,
+    basePlanCanvas: { width: 1400, height: 1060 },
+    sheetQuarterTurns: 2,
+    planCanvas: { width: 1400, height: 1060 },
+    planWidth: 1400,
+    planHeight: 1060,
+    planTitle: 'Моя квартира.png',
+    vertices: [...quad],
+    undoHistory: history,
+    selectedVertexIndex: 2,
+    hoveredVertexIndex: 1,
+    hoveredEdgeMidpoint: 0,
+    orthoSnap: false,
+    contourTransientHint: 'Подсказка',
+    northSet: true,
+    northSource: 'satellite',
+    northAngleDeg: 22,
+    legacyManualNorthNotice: true,
+    alignNorthUp: false,
+    frozenRotationDeg: -22,
+    activeTab: 'layers',
+    mapExported: true,
+    layers: {
+      showSectors: false,
+      showSectorLabels: true,
+      showAxes: false,
+      showBrahmastan: false,
+      showPadas: true,
+      showPadaBelts: true,
+      showPadaScores: true,
+      sectorOpacity: 0.8,
+    },
+    sat: {
+      canvas: { width: 780, height: 1688 },
+      width: 780,
+      height: 1688,
+      title: 'sat.png',
+      satPts: [
+        { x: 10, y: 20 },
+        { x: 200, y: 20 },
+      ],
+      planPts: [
+        { x: 100, y: 100 },
+        { x: 500, y: 100 },
+      ],
+      houseTiltDeg: 22,
+    },
+    satViewMode: 'done',
+    satShortWallWarning: 'Короткая стена',
+    satZoom: 2.8,
+    satPanX: 45,
+    satPanY: -30,
+    vastuMap: readyMap,
+    zoom: 2.35,
+    panX: 120,
+    panY: -85,
+    lastRenderMeta: { placedAxesCount: 8 },
+  };
+
+  resetWorkspaceState(dirtyState);
+
+  assert.equal(dirtyState.isSamplePlan, false);
+  assert.equal(dirtyState.sampleModified, false);
+  assert.equal(dirtyState.basePlanCanvas, null);
+  assert.equal(dirtyState.sheetQuarterTurns, 0);
+  assert.equal(dirtyState.planCanvas, null);
+  assert.equal(dirtyState.planWidth, 0);
+  assert.equal(dirtyState.planHeight, 0);
+  assert.equal(dirtyState.planTitle, '');
+  assert.deepEqual(dirtyState.vertices, []);
+  assert.equal(dirtyState.undoHistory.length, 0);
+  assert.equal(dirtyState.selectedVertexIndex, -1);
+  assert.equal(dirtyState.hoveredVertexIndex, -1);
+  assert.equal(dirtyState.hoveredEdgeMidpoint, null);
+  assert.equal(dirtyState.orthoSnap, true);
+  assert.equal(dirtyState.contourTransientHint, '');
+  assert.equal(dirtyState.northSet, false);
+  assert.equal(dirtyState.northSource, null);
+  assert.equal(dirtyState.northAngleDeg, null);
+  assert.equal(dirtyState.legacyManualNorthNotice, false);
+  assert.equal(dirtyState.alignNorthUp, true);
+  assert.equal(dirtyState.frozenRotationDeg, null);
+  assert.equal(dirtyState.activeTab, 'plan');
+  assert.equal(dirtyState.mapExported, false);
+  assert.deepEqual(dirtyState.layers, createDefaultLayers());
+  assert.equal(dirtyState.layers.showSectorLabels, false);
+  assert.equal(dirtyState.sat.canvas, null);
+  assert.equal(dirtyState.sat.width, 0);
+  assert.equal(dirtyState.sat.height, 0);
+  assert.equal(dirtyState.sat.title, '');
+  assert.deepEqual(dirtyState.sat.satPts, []);
+  assert.deepEqual(dirtyState.sat.planPts, []);
+  assert.equal(dirtyState.sat.houseTiltDeg, null);
+  assert.equal(dirtyState.satViewMode, 'idle');
+  assert.equal(dirtyState.satShortWallWarning, '');
+  assert.equal(dirtyState.satZoom, 1);
+  assert.equal(dirtyState.satPanX, 0);
+  assert.equal(dirtyState.satPanY, 0);
+  assert.equal(dirtyState.vastuMap, null);
+  assert.equal(dirtyState.zoom, 1);
+  assert.equal(dirtyState.panX, 0);
+  assert.equal(dirtyState.panY, 0);
+  assert.equal(dirtyState.lastRenderMeta, null);
+
+  const afterSteps = computeStepsState(dirtyState);
+  assert.equal(afterSteps.activeTab, 'plan');
+  assert.equal(afterSteps.hasPlan, false);
+  assert.equal(afterSteps.showNewMapButton, false);
+  assert.deepEqual(
+    afterSteps.steps.map((s) => s.disabled),
+    [false, true, true, true]
+  );
+
+  // 3) Очистка localStorage и sessionStorage в clearWorkspaceSession()
+  const makeMockStorage = () => {
+    const map = new Map();
+    return {
+      get length() {
+        return map.size;
+      },
+      key(i) {
+        return Array.from(map.keys())[i] ?? null;
+      },
+      getItem(k) {
+        return map.has(k) ? map.get(k) : null;
+      },
+      setItem(k, v) {
+        map.set(k, String(v));
+      },
+      removeItem(k) {
+        map.delete(k);
+      },
+    };
+  };
+  const prevLS = globalThis.localStorage;
+  const prevSS = globalThis.sessionStorage;
+  try {
+    const mockLS = makeMockStorage();
+    const mockSS = makeMockStorage();
+    mockLS.setItem('anna_romeo_vastu_karta_session_v2', '{"version":2}');
+    mockLS.setItem('unrelated_key', 'keep');
+    mockSS.setItem('anna_romeo_vastu_karta_session_v2', '{"version":2}');
+    globalThis.localStorage = mockLS;
+    globalThis.sessionStorage = mockSS;
+
+    await clearWorkspaceSession();
+
+    assert.equal(mockLS.getItem('anna_romeo_vastu_karta_session_v2'), null);
+    assert.equal(mockSS.getItem('anna_romeo_vastu_karta_session_v2'), null);
+    assert.equal(mockLS.getItem('unrelated_key'), 'keep');
+  } finally {
+    if (prevLS === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLS;
+    if (prevSS === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSS;
+  }
+
+  // 4) Проверка разметки и отсутствия window.confirm
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const html = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(repoRoot, 'src', 'app.js'), 'utf8');
+  assert.match(html, /<button[^>]*id="newMapBtn"[^>]*hidden[^>]*>\s*Новая карта\s*<\/button>/);
+  assert.equal(/window\.confirm\s*\(/.test(appJs), false, 'Не используется системный window.confirm');
+  assert.match(appJs, /Начать новую карту\?/);
+  assert.match(appJs, /Текущая карта не сохранится\. Если она нужна, сначала сохраните её картинкой\./);
+  assert.match(appJs, /Начать заново/);
 });

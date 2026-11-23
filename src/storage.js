@@ -56,6 +56,22 @@ async function idbGet(key) {
   }
 }
 
+async function idbClearAll() {
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(SESSION_KEY);
+      store.clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB clear error'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Создаёт компактную уменьшенную копию базового холста плана для хранения на устройстве.
  */
@@ -147,4 +163,40 @@ export async function loadWorkspaceSession() {
     return null;
   }
   return null;
+}
+
+/**
+ * Полностью очищает сохранённую сессию из IndexedDB, localStorage и sessionStorage
+ * (используется кнопкой «Новая карта»).
+ */
+export async function clearWorkspaceSession() {
+  try {
+    await idbClearAll();
+  } catch {
+    // IndexedDB может быть недоступен (например, приватный режим или тестовая среда Node)
+  }
+
+  for (const store of [
+    typeof localStorage !== 'undefined' ? localStorage : null,
+    typeof sessionStorage !== 'undefined' ? sessionStorage : null,
+  ]) {
+    if (!store) continue;
+    try {
+      store.removeItem(LS_FALLBACK_KEY);
+      if (typeof store.length === 'number' && typeof store.key === 'function') {
+        const toRemove = [];
+        for (let i = 0; i < store.length; i++) {
+          const k = store.key(i);
+          if (k && k.startsWith('anna_romeo_vastu_karta')) {
+            toRemove.push(k);
+          }
+        }
+        for (const k of toRemove) {
+          store.removeItem(k);
+        }
+      }
+    } catch {
+      // Игнорируем ограничения доступа к хранилищу
+    }
+  }
 }

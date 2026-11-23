@@ -65,6 +65,7 @@ export function computeStepsState(state = {}) {
     hasValidContour,
     canShowMap,
     isPointPicking,
+    showNewMapButton: Boolean(hasPlan && activeTab !== 'plan'),
     steps: [
       {
         id: 'plan',
@@ -573,4 +574,71 @@ export function restoreSavedLayers(savedLayers) {
         ? savedLayers.sectorOpacity
         : defaults.sectorOpacity,
   };
+}
+
+/**
+ * Полностью сбрасывает рабочее состояние конструктора к пустому Шагу 1 («Новая карта»):
+ * очищает план, точки, контур, север, спутник, подписи/слои, масштаб, историю отмены и метаданные.
+ */
+export function resetWorkspaceState(state) {
+  if (!state || typeof state !== 'object') return state;
+
+  state.isSamplePlan = false;
+  state.sampleModified = false;
+  state.basePlanCanvas = null;
+  state.sheetQuarterTurns = 0;
+
+  state.planCanvas = null;
+  state.planWidth = 0;
+  state.planHeight = 0;
+  state.planTitle = '';
+
+  state.vertices = [];
+  if (state.undoHistory && typeof state.undoHistory.clear === 'function') {
+    state.undoHistory.clear();
+  } else {
+    state.undoHistory = createUndoHistory(40);
+  }
+  state.selectedVertexIndex = -1;
+  state.hoveredVertexIndex = -1;
+  state.hoveredEdgeMidpoint = null;
+  state.orthoSnap = true;
+  state.contourTransientHint = '';
+
+  state.northSet = false;
+  state.northSource = null;
+  state.northAngleDeg = null;
+  state.legacyManualNorthNotice = false;
+  state.alignNorthUp = true;
+  state.frozenRotationDeg = null;
+  state.activeTab = 'plan';
+  state.mapExported = false;
+
+  state.layers = createDefaultLayers();
+
+  if (!state.sat || typeof state.sat !== 'object') {
+    state.sat = {};
+  }
+  state.sat.canvas = null;
+  state.sat.width = 0;
+  state.sat.height = 0;
+  state.sat.title = '';
+  state.sat.satPts = [];
+  state.sat.planPts = [];
+  state.sat.houseTiltDeg = null;
+
+  state.satViewMode = 'idle';
+  state.satShortWallWarning = '';
+  state.satZoom = 1;
+  state.satPanX = 0;
+  state.satPanY = 0;
+
+  state.vastuMap = null;
+
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  state.lastRenderMeta = null;
+
+  return state;
 }

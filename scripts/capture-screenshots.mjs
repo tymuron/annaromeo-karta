@@ -433,6 +433,143 @@ async function main() {
     assert.equal(exportMetaCheck.placedAxesCount, 8);
     assertNoOverlappingBadges(exportMetaCheck.placedBadges, 'Exported PNG 32 padas + 8 axes');
 
+    // =========================================================================
+    // 1Б. КОМПЬЮТЕР 1440x900: кнопка «Новая карта», окно подтверждения, сброс и повторная загрузка того же файла
+    // =========================================================================
+    await desktopPage.locator('#toggleSectorLabels').check({ force: true });
+    await desktopPage.locator('#zoomInBtn').click();
+    await desktopPage.waitForTimeout(120);
+
+    const desktopNewMapBtnCheck = await desktopPage.evaluate(() => {
+      const btn = document.getElementById('newMapBtn');
+      const exp = document.getElementById('topExportBtn');
+      const brand = document.querySelector('.brand-lockup');
+      const br = brand.getBoundingClientRect();
+      const nr = btn.getBoundingClientRect();
+      const er = exp.getBoundingClientRect();
+      return {
+        hidden: btn.hidden,
+        text: btn.textContent.trim(),
+        width: nr.width,
+        height: nr.height,
+        noOverlapBrand: br.right <= nr.left + 1,
+        noOverlapExport: nr.right <= er.left + 1,
+        fitsViewport: nr.right <= window.innerWidth,
+      };
+    });
+    assert.equal(desktopNewMapBtnCheck.hidden, false, 'На шаге 4 кнопка «Новая карта» видна');
+    assert.equal(desktopNewMapBtnCheck.text, 'Новая карта');
+    assert.ok(desktopNewMapBtnCheck.width >= 80 && desktopNewMapBtnCheck.height >= 32);
+    assert.equal(desktopNewMapBtnCheck.noOverlapBrand, true);
+    assert.equal(desktopNewMapBtnCheck.noOverlapExport, true);
+    assert.equal(desktopNewMapBtnCheck.fitsViewport, true);
+
+    await desktopPage.locator('#newMapBtn').click();
+    await desktopPage.waitForTimeout(120);
+
+    const desktopModalCheck = await desktopPage.evaluate(() => ({
+      hidden: document.getElementById('confirmModal').hidden,
+      title: document.getElementById('confirmModalTitle').textContent.trim(),
+      message: document.getElementById('confirmModalMessage').textContent.trim(),
+      acceptText: document.getElementById('confirmModalAcceptBtn').textContent.trim(),
+      cancelText: document.getElementById('confirmModalCancelBtn').textContent.trim(),
+    }));
+    assert.equal(desktopModalCheck.hidden, false);
+    assert.equal(desktopModalCheck.title, 'Начать новую карту?');
+    assert.equal(
+      desktopModalCheck.message,
+      'Текущая карта не сохранится. Если она нужна, сначала сохраните её картинкой.'
+    );
+    assert.equal(desktopModalCheck.acceptText, 'Начать заново');
+    assert.equal(desktopModalCheck.cancelText, 'Отмена');
+
+    await takeShot(desktopPage, 'desktop-1440x900-new-map-confirm.png');
+
+    // Проверяем «Отмена»: карта остаётся на месте
+    await desktopPage.locator('#confirmModalCancelBtn').click();
+    await desktopPage.waitForTimeout(100);
+    assert.equal(
+      await desktopPage.evaluate(() => Boolean(window.__vastuApp.state.planCanvas)),
+      true,
+      'После «Отмена» текущая карта сохранена'
+    );
+
+    // Подтверждаем «Начать заново» -> полный сброс и возврат на Шаг 1
+    await desktopPage.locator('#newMapBtn').click();
+    await desktopPage.waitForTimeout(80);
+    await desktopPage.locator('#confirmModalAcceptBtn').click();
+    await desktopPage.waitForTimeout(220);
+
+    const desktopAfterReset = await desktopPage.evaluate(async () => {
+      const storageMod = await import('./src/storage.js');
+      const savedAfter = await storageMod.loadWorkspaceSession();
+      const st = window.__vastuApp.state;
+      const steps = window.__vastuApp.computeStepsState();
+      return {
+        planCanvasNull: st.planCanvas === null,
+        verticesLen: st.vertices.length,
+        northSet: st.northSet,
+        northAngleDeg: st.northAngleDeg,
+        satCanvasNull: st.sat.canvas === null,
+        satPtsLen: st.sat.satPts.length,
+        planPtsLen: st.sat.planPts.length,
+        showSectorLabels: st.layers.showSectorLabels,
+        showPadas: st.layers.showPadas,
+        zoom: st.zoom,
+        activeTab: st.activeTab,
+        disabledFlags: steps.steps.map((s) => s.disabled),
+        newMapHidden: document.getElementById('newMapBtn').hidden,
+        topExportHidden: document.getElementById('topExportBtn').hidden,
+        planInputVal: document.getElementById('planFileInput').value,
+        satInputVal: document.getElementById('satFileInput').value,
+        lsItem: localStorage.getItem('anna_romeo_vastu_karta_session_v2'),
+        savedAfter,
+      };
+    });
+    assert.equal(desktopAfterReset.planCanvasNull, true);
+    assert.equal(desktopAfterReset.verticesLen, 0);
+    assert.equal(desktopAfterReset.northSet, false);
+    assert.equal(desktopAfterReset.northAngleDeg, null);
+    assert.equal(desktopAfterReset.satCanvasNull, true);
+    assert.equal(desktopAfterReset.satPtsLen, 0);
+    assert.equal(desktopAfterReset.planPtsLen, 0);
+    assert.equal(desktopAfterReset.showSectorLabels, false);
+    assert.equal(desktopAfterReset.showPadas, false);
+    assert.equal(desktopAfterReset.zoom, 1);
+    assert.equal(desktopAfterReset.activeTab, 'plan');
+    assert.deepEqual(desktopAfterReset.disabledFlags, [false, true, true, true]);
+    assert.equal(desktopAfterReset.newMapHidden, true);
+    assert.equal(desktopAfterReset.topExportHidden, true);
+    assert.equal(desktopAfterReset.planInputVal, '');
+    assert.equal(desktopAfterReset.satInputVal, '');
+    assert.equal(desktopAfterReset.lsItem, null);
+    assert.equal(desktopAfterReset.savedAfter, null);
+
+    await takeShot(desktopPage, 'desktop-1440x900-after-reset-step1.png');
+
+    // Повторная загрузка ТОГО ЖЕ САМОГО файла plan-kvartiry.png работает как при первом открытии
+    await desktopPage.setInputFiles('#planFileInput', {
+      name: 'plan-kvartiry.png',
+      mimeType: 'image/png',
+      buffer: planAsset.buffer,
+    });
+    await desktopPage.waitForTimeout(200);
+
+    const desktopReuploadCheck = await desktopPage.evaluate(() => ({
+      hasPlan: Boolean(window.__vastuApp.state.planCanvas),
+      planWidth: window.__vastuApp.state.planWidth,
+      activeTab: window.__vastuApp.state.activeTab,
+      modalHidden: document.getElementById('confirmModal').hidden,
+      newMapHidden: document.getElementById('newMapBtn').hidden,
+    }));
+    assert.equal(desktopReuploadCheck.hasPlan, true);
+    assert.equal(desktopReuploadCheck.planWidth, 1400);
+    assert.equal(desktopReuploadCheck.activeTab, 'north');
+    assert.equal(desktopReuploadCheck.modalHidden, true, 'Без лишнего окна подтверждения после сброса');
+    assert.equal(desktopReuploadCheck.newMapHidden, false, 'На шаге 2 после повторной загрузки кнопка «Новая карта» снова видна');
+
+    await takeShot(desktopPage, 'desktop-1440x900-reupload-same-plan.png');
+
     await desktopCtx.close();
 
     // =========================================================================
@@ -731,18 +868,111 @@ async function main() {
     await mobile390Page.locator('#pickingDoneBtn').click();
     await mobile390Page.waitForTimeout(180);
 
-    const m390ReadyMap = await mobile390Page.evaluate(() => ({
-      activeTab: window.__vastuApp.state.activeTab,
-      placedAxesCount: window.__vastuApp.state.lastRenderMeta.placedAxesCount,
-      badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
-      exportDisabled: document.getElementById('exportPngBtn').disabled,
-    }));
+    const m390ReadyMap = await mobile390Page.evaluate(() => {
+      const btn = document.getElementById('newMapBtn');
+      const exp = document.getElementById('topExportBtn');
+      const brand = document.querySelector('.brand-lockup');
+      const topbar = document.querySelector('.topbar');
+      const br = brand.getBoundingClientRect();
+      const nr = btn.getBoundingClientRect();
+      const er = exp.getBoundingClientRect();
+      const tr = topbar.getBoundingClientRect();
+      return {
+        activeTab: window.__vastuApp.state.activeTab,
+        placedAxesCount: window.__vastuApp.state.lastRenderMeta.placedAxesCount,
+        badges: window.__vastuApp.state.lastRenderMeta.placedBadges,
+        exportDisabled: document.getElementById('exportPngBtn').disabled,
+        newMapHidden: btn.hidden,
+        newMapFitsTopbar:
+          nr.left >= br.right - 1 &&
+          nr.right <= er.left + 1 &&
+          er.right <= window.innerWidth + 1 &&
+          nr.bottom <= tr.bottom + 1,
+      };
+    });
     assert.equal(m390ReadyMap.activeTab, 'layers');
     assert.equal(m390ReadyMap.placedAxesCount, 8);
     assert.equal(m390ReadyMap.exportDisabled, false);
+    assert.equal(m390ReadyMap.newMapHidden, false, '390x844: кнопка «Новая карта» видна на шаге 4');
+    assert.equal(m390ReadyMap.newMapFitsTopbar, true, '390x844: «Новая карта» не перекрывает бренд и «Скачать карту»');
     assertNoOverlappingBadges(m390ReadyMap.badges, 'Mobile 390x844 ready map');
 
     await takeShot(mobile390Page, 'mobile-390x844.png');
+
+    // 2.4. Телефон 390x844: «Новая карта» -> окно подтверждения -> Шаг 1 после сброса -> перезагрузка -> повторная загрузка того же файла
+    await mobile390Page.locator('#newMapBtn').click();
+    await mobile390Page.waitForTimeout(120);
+
+    const m390ModalCheck = await mobile390Page.evaluate(() => {
+      const card = document.querySelector('#confirmModal .modal-card').getBoundingClientRect();
+      return {
+        hidden: document.getElementById('confirmModal').hidden,
+        title: document.getElementById('confirmModalTitle').textContent.trim(),
+        message: document.getElementById('confirmModalMessage').textContent.trim(),
+        fitsViewport:
+          card.left >= 0 &&
+          card.right <= window.innerWidth + 1 &&
+          card.top >= 0 &&
+          card.bottom <= window.innerHeight + 1,
+      };
+    });
+    assert.equal(m390ModalCheck.hidden, false);
+    assert.equal(m390ModalCheck.title, 'Начать новую карту?');
+    assert.equal(m390ModalCheck.fitsViewport, true);
+
+    await takeShot(mobile390Page, 'mobile-390x844-new-map-confirm.png');
+
+    await mobile390Page.locator('#confirmModalAcceptBtn').click();
+    await mobile390Page.waitForTimeout(240);
+
+    const m390AfterReset = await mobile390Page.evaluate(async () => {
+      const storageMod = await import('./src/storage.js');
+      const savedAfter = await storageMod.loadWorkspaceSession();
+      return {
+        planCanvasNull: window.__vastuApp.state.planCanvas === null,
+        activeTab: window.__vastuApp.state.activeTab,
+        newMapHidden: document.getElementById('newMapBtn').hidden,
+        heroVisible: !document.getElementById('planEmptyState').hidden,
+        savedAfter,
+      };
+    });
+    assert.equal(m390AfterReset.planCanvasNull, true);
+    assert.equal(m390AfterReset.activeTab, 'plan');
+    assert.equal(m390AfterReset.newMapHidden, true);
+    assert.equal(m390AfterReset.heroVisible, true);
+    assert.equal(m390AfterReset.savedAfter, null);
+
+    await takeShot(mobile390Page, 'mobile-390x844-after-reset-step1.png');
+
+    // Перезагрузка после сброса остаётся на пустом Шаге 1 (IndexedDB и localStorage очищены)
+    await mobile390Page.reload({ waitUntil: 'networkidle' });
+    await mobile390Page.waitForTimeout(180);
+    assert.equal(
+      await mobile390Page.evaluate(() => window.__vastuApp.state.planCanvas === null),
+      true,
+      '390x844: после перезагрузки страницы сброшенная карта не восстанавливается'
+    );
+
+    // Повторная загрузка того же файла plan-kvartiry.png работает как в первый раз
+    await mobile390Page.setInputFiles('#planFileInput', {
+      name: 'plan-kvartiry.png',
+      mimeType: 'image/png',
+      buffer: planAsset.buffer,
+    });
+    await mobile390Page.waitForTimeout(200);
+
+    const m390Reupload = await mobile390Page.evaluate(() => ({
+      hasPlan: Boolean(window.__vastuApp.state.planCanvas),
+      activeTab: window.__vastuApp.state.activeTab,
+      newMapHidden: document.getElementById('newMapBtn').hidden,
+      modalHidden: document.getElementById('confirmModal').hidden,
+    }));
+    assert.equal(m390Reupload.hasPlan, true);
+    assert.equal(m390Reupload.activeTab, 'north');
+    assert.equal(m390Reupload.newMapHidden, false);
+    assert.equal(m390Reupload.modalHidden, true);
+
+    await takeShot(mobile390Page, 'mobile-390x844-reupload-same-plan.png');
     await mobile390Ctx.close();
 
     // =========================================================================

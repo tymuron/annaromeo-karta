@@ -43,12 +43,14 @@ import {
   buildExportFilename,
   canExportVastuMap,
   createDefaultLayers,
+  resetWorkspaceState,
 } from './state-helpers.js';
 import {
   downscalePlanToDataUrl,
   restorePlanCanvasFromDataUrl,
   saveWorkspaceSession,
   loadWorkspaceSession,
+  clearWorkspaceSession,
 } from './storage.js';
 
 const state = {
@@ -185,6 +187,7 @@ const sectorOpacityValue = document.getElementById('sectorOpacityValue');
 const centerSummaryText = document.getElementById('centerSummaryText');
 const zonesBalanceList = document.getElementById('zonesBalanceList');
 
+const newMapBtn = document.getElementById('newMapBtn');
 const topExportBtn = document.getElementById('topExportBtn');
 const exportPngBtn = document.getElementById('exportPngBtn');
 const shareMapBtn = document.getElementById('shareMapBtn');
@@ -1180,6 +1183,9 @@ function syncInspectorUI() {
   sectorOpacityValue.textContent = `${opacityPct}%`;
 
   const canExport = canExportVastuMap(state);
+  if (newMapBtn) {
+    newMapBtn.hidden = !stepsInfo.showNewMapButton;
+  }
   topExportBtn.disabled = !canExport;
   // Кнопка в шапке не выставляется вперёд на шагах 1–3: показывается только на шаге 4, когда карта готова
   topExportBtn.hidden = !(canExport && state.activeTab === 'layers');
@@ -2441,6 +2447,24 @@ if (shareMapBtn) {
   shareMapBtn.addEventListener('click', shareReadyMapPng);
 }
 
+async function handleNewMapClick() {
+  if (!state.planCanvas) return;
+  const confirmed = await askUserConfirmation({
+    title: 'Начать новую карту?',
+    message:
+      'Текущая карта не сохранится. Если она нужна, сначала сохраните её картинкой.',
+    confirmText: 'Начать заново',
+    cancelText: 'Отмена',
+  });
+  if (!confirmed) return;
+
+  await resetForNewMap();
+}
+
+if (newMapBtn) {
+  newMapBtn.addEventListener('click', handleNewMapClick);
+}
+
 // Клавиши быстрого управления (Cmd/Ctrl+Z для отмены и Escape для закрытия окон)
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -2494,38 +2518,41 @@ resizeObserver.observe(canvasStage);
 //   и переводит ученицу на Шаг 2 с просьбой задать Север по спутнику.
 // ============================================================================
 function resetToFreshStep1() {
-  state.isSamplePlan = false;
-  state.sampleModified = false;
-  state.basePlanCanvas = null;
-  state.sheetQuarterTurns = 0;
-  state.planCanvas = null;
-  state.planWidth = 0;
-  state.planHeight = 0;
-  state.planTitle = '';
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  if (saveToastTimer) {
+    clearTimeout(saveToastTimer);
+    saveToastTimer = null;
+  }
+
   cachedBasePlanDataUrl = null;
+  lastExportDataUrl = null;
+  activePointers.clear();
+  gesture = null;
 
-  state.vertices = [];
-  state.undoHistory.clear();
-  state.selectedVertexIndex = -1;
-  state.contourTransientHint = '';
-  state.mapExported = false;
+  resetWorkspaceState(state);
 
-  state.northSet = false;
-  state.northSource = null;
-  state.northAngleDeg = null;
-  state.legacyManualNorthNotice = false;
-  state.frozenRotationDeg = null;
-  state.alignNorthUp = true;
+  if (planFileInput) planFileInput.value = '';
+  if (satFileInput) satFileInput.value = '';
+  if (planErrorBox) {
+    planErrorBox.hidden = true;
+    planErrorBox.textContent = '';
+  }
+  if (saveToast) saveToast.hidden = true;
+  if (imagePreviewModal) imagePreviewModal.hidden = true;
+  if (previewModalImg) previewModalImg.removeAttribute('src');
+  studioShell.classList.remove('canvas-expanded');
+  if (toggleCanvasSizeBtn) toggleCanvasSizeBtn.textContent = 'Крупнее';
+  if (inspectorScroll) inspectorScroll.scrollTop = 0;
 
-  state.sat.canvas = null;
-  state.sat.satPts = [];
-  state.sat.planPts = [];
-  state.sat.houseTiltDeg = null;
-  state.satShortWallWarning = '';
-  state.satViewMode = 'idle';
-
-  state.activeTab = 'plan';
   recomputeVastuMap();
+}
+
+async function resetForNewMap() {
+  resetToFreshStep1();
+  await clearWorkspaceSession();
 }
 
 async function restoreOrInit() {
@@ -2629,4 +2656,5 @@ window.__vastuApp = {
   handlePointPickingDone,
   computeStepsState: () => computeStepsState(state),
   exportMapToPngCanvas: () => exportMapToPngCanvas(state),
+  resetForNewMap,
 };
